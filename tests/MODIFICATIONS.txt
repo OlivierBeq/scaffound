@@ -1,0 +1,81 @@
+The following corrections have been brought to the original Table S2 from [1] (file `cox2_816_inhibitors.txt`):
+
+    -           Decorated and augmented frameworks
+                Originally, double bonds of sulfonyl groups were persisted when obtaining the generic graphs,
+                this caused the carbon atoms attached to become hypervalent. Here, both oxygens atoms
+                of all sulfonyl groups were dropped.
+
+    - line 80:  Augmented scaffold, framework, and wireframe
+                The 2 exocyclic methyl groups being part of the longest chain, containing only one other
+                atom, one of them should be removed, as illustrated by Figure 3. This is supported by
+                the molecules' processing in the authors' KNIME workflow (available on GitHub [2]).
+                Changes have been made to delete one extra methyl group.
+
+    - line 84:  Augmented scaffold, framework, and wireframe
+                The same changes as for line 80 were made.
+
+    - line 161: Original molecular graph, augmented scaffold, and framework
+                The uncharged tetravalent nitrogen's charge has been bumped.
+
+    - line 363: Original molecular graph, augmented scaffold, and framework
+                The same changes as for line 161 were made.
+
+    - line 430: Augmented scaffold, framework, and wireframes
+                The longest path is not the only valid one. Changed to the first one identified.
+
+    - line 541: Augmented scaffold, framework, and wireframes
+                The longest path is not the only valid one. Changed to the first one identified.
+
+    - line 554: Augmented scaffold, framework, and wireframes
+                The longest path is not the only valid one. Changed to the first one identified.
+
+    - line 571: Augmented scaffold, framework, and wireframes
+                The longest path is not the only valid one. Changed to the first one identified.
+
+    - line 619: Basic, decorated, and augmented wireframe
+                The double bonds of the cyclopentadiene that used not to be saturated have been changed
+                to single bonds.
+
+    - line 621: Original molecular graph, basic, decorated, and augmented scaffold, framework, and wireframe
+                The elemental carbon cyclopentadiene was changed to an aromatic cyclopentadiene.
+
+    - line 646: Original molecular graph, augmented scaffold, and framework
+                The uncharged tetravalent nitrogen's charge has been bumped.
+
+    - line 660: Augmented scaffold, decorated framework and wireframe
+                The monoxide of the oxotechnetium was not part of the augmented scaffold, while being
+                part of the decorated scaffold. The monoxide moiety of the oxotechnetium has been
+                added back to the augmented scaffold.
+                The decorated framework and wireframe were not accounting for the
+                hypervalent carbon replacing technetium. This has been fixed by removing the
+                carbon atom that was originally replacing the monoxide atom. This should also
+                have been the case for the augmented framework and wireframe, should the previous
+                issue have not been present.
+
+    - line 687: Decorated and augmented frameworks
+                The double-bonded oxygen bond to the phosphate group was removed.
+
+
+Additionally, the following modifications have been brought to support the improved longest path algorithm
+(file `cox2_816_inhibitors_adapted_lsp.txt`):
+
+    - line 18:  Augmented scaffold, framework, and wireframes
+                The default improved longest path algorithm favours unsaturated bond. The scaffold
+                and its derivatives have been adapted accordingly.
+
+    - line 554: Augmented scaffold, framework, and wireframes
+                In case of multiple longest atom paths with the same length, the paths visiting the least
+                number of rings are prioritized. If multiple of these exist, the ones with asymmetry are
+                prioritized. If multiples of these exist, the first one identified is returned.
+                The symmetric longest path used to be prioritized, and has been replaced herein with the
+                asymmetric path of equal length.
+
+
+[1] Manelfi, C., Gemei, M., Talarico, C. et al.
+“Molecular Anatomy”: a new multi-dimensional hierarchical scaffold analysis tool.
+J Cheminform 13, 54 (2021).
+https://doi.org/10.1186/s13321-021-00526-y
+
+[2] Rosario Beccari, A. (2021)
+Molecular_Anatomy [Computer software].
+https://github.com/andreabeccari/Molecular_Anatomy

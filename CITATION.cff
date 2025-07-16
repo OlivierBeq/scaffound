@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this library, please cite it as follows:"
+authors:
+- family-names: "Béquignon"
+  given-names: "Olivier J. M."
+  orcid: "https://orcid.org/0000-0002-7554-9220"
+title: "scaffound"
+version: 0.0.1
+date-released: 2025-08-04
+url: "https://github.com/OlivierBeq/scaffound"
