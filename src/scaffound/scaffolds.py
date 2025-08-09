@@ -345,10 +345,11 @@ def get_augmented_scaffold(mol: Chem.Mol,
                            loose_ez_stereo: bool = False,
                            opts: paths.MinMaxShortestPathOptions = None) -> Chem.Mol:
     opts = opts or paths.MinMaxShortestPathOptions()
+    # Step 1
+    # Initial molecule preparation
     Chem.Kekulize(mol)
-    atoms_to_remove = utils.identify_terminal_atoms(mol)
     rw_mol = Chem.RWMol(mol)
-    utils.unassign_chirality_and_delete(rw_mol, atoms_to_remove)
+    utils.unassign_chirality_and_delete(rw_mol, utils.identify_terminal_atoms(mol))
     mol = rw_mol.GetMol()
     with BlockLogs():
         Chem.SanitizeMol(mol)
@@ -356,26 +357,86 @@ def get_augmented_scaffold(mol: Chem.Mol,
     with BlockLogs():
         Chem.SanitizeMol(mol)
     mol = Chem.RemoveHs(mol)
+    # Step 2
     # Get atoms of the basic scaffold
-    bsc_atoms = (get_basic_scaffold(mol, loose_ez_stereo, True)
-                 if basic_scaffold_atoms is None
-                 else basic_scaffold_atoms)
+    bsc_atoms = (get_basic_scaffold(mol, loose_ez_stereo, True) if basic_scaffold_atoms is None else basic_scaffold_atoms)
     # Get atoms of the decorated scaffold
-    dsc_atoms = (get_decorated_scaffold(mol, bsc_atoms, loose_ez_stereo, True)
-                 if decorated_scaffold_atoms is None
-                 else decorated_scaffold_atoms)
+    dsc_atoms = (get_decorated_scaffold(mol, bsc_atoms, loose_ez_stereo, True) if decorated_scaffold_atoms is None else decorated_scaffold_atoms)
     # Fast exit if the molecule is its own basic or decorated scaffold
     if len(bsc_atoms) == len(mol.GetAtoms()):
-        mol = utils.fix_valence(mol)
-        return mol
+        return utils.fix_valence(mol)
     if len(dsc_atoms) == len(mol.GetAtoms()):
         rw_mol = Chem.RWMol(mol)
         utils.unassign_chirality_and_delete(rw_mol, [atom.GetIdx()
-                                               for atom in rw_mol.GetAtoms()
-                                               if atom.GetIdx() not in dsc_atoms])
+                                            for atom in rw_mol.GetAtoms()
+                                            if atom.GetIdx() not in dsc_atoms])
         mol = rw_mol.GetMol()
+        return utils.fix_valence(mol)
+    # Step 3
+    # Determine terminal carbons and the main path
+    terminal_carbons, longest_shortest_path = _determine_terminal_carbons_and_path(mol, bsc_atoms, dsc_atoms, opts)
+    # Step 4
+    # Handle the special case of a short C-X-C path (length of 3 and contains both terminal carbons)
+    if len(terminal_carbons) == 2 and len(set(terminal_carbons).difference(longest_shortest_path)) == 0 and len(longest_shortest_path) == 3:
+        common_atoms = [x for x in longest_shortest_path if x in terminal_carbons]
+        if mol.GetAtomWithIdx(common_atoms[0]).GetSymbol() == 'C':
+            new_atom_list_to_remove = terminal_carbons[1:]
+            rw_mol = Chem.RWMol(mol)
+            utils.unassign_chirality_and_delete(rw_mol, new_atom_list_to_remove)
+            mol = rw_mol.GetMol()
+            mol = utils.fix_valence(mol)
+    else:
+        # Step 5
+        # Identify all side chains to prune
+        atoms_to_remove, atoms_to_replace = _prune_side_chains(mol, longest_shortest_path, terminal_carbons, bsc_atoms, dsc_atoms)
+        # Step 6
+        # Keep track of original atom ids after deletion of others
+        for atom in mol.GetAtoms():
+            atom.SetIntProp('__original_id__', atom.GetIdx())
+        # Apply the pruning and replacements
+        rw_mol = Chem.RWMol(mol)
+        utils.unassign_chirality_and_delete(rw_mol, atoms_to_remove)
+        old_to_new_ids = {atom.GetIntProp('__original_id__'): atom.GetIdx() for atom in rw_mol.GetAtoms()}
+        for root, atom in atoms_to_replace:
+            rw_mol.RemoveAtom(old_to_new_ids[atom])
+            # A temporary explicit hydrogen is added to the root atom. This is critical
+            # to prevent RDKit from changing the atom's valence to 0 (making it elemental)
+            # after its only connecting side-chain atom is removed. This H is removed later.
+            w = rw_mol.AddAtom(Chem.Atom('H'))
+            rw_mol.AddBond(old_to_new_ids[root], w, Chem.BondType.SINGLE)
+            rw_mol.GetAtomWithIdx(old_to_new_ids[root]).UpdatePropertyCache()
+        mol = rw_mol.GetMol()
+        with BlockLogs():
+            Chem.SanitizeMol(mol)
+        # Ensure the valence of the root atom is correct (not elemental)
         mol = utils.fix_valence(mol)
-        return mol
+    # Step 7
+    # Final cleanup
+    rw_mol = Chem.RWMol(mol)
+    utils.unassign_chirality_and_delete(rw_mol, utils.identify_terminal_atoms(mol))
+    mol = rw_mol.GetMol()
+    with BlockLogs():
+        # Sanitize the molecule twice. In complex cases involving multiple atom removals
+        # and valence changes, a single sanitization pass is sometimes insufficient to
+        # fully update the molecule's property caches. A second pass ensures correctness.
+        Chem.SanitizeMol(mol)
+        Chem.SanitizeMol(mol)
+    mol = utils.fix_valence(mol)
+    # Ensure the hydrogens added to the root atoms are made implicit
+    return Chem.RemoveHs(mol)
+
+
+def _determine_terminal_carbons_and_path(mol: Chem.Mol, bsc_atoms: list[int], dsc_atoms: list[int], opts: paths.MinMaxShortestPathOptions) -> tuple[list[int], list[int]]:
+    """Identify the relevant terminal carbons and the longest shortest path between them.
+    
+    This is the first major step of the augmented scaffold algorithm.
+    
+    :param mol: the molecule
+    :param bsc_atoms: atom indices of the basic scaffold
+    :param dsc_atoms: atom indices of the decorated scaffold
+    :param opts: options of the longest shortest path
+    :return: the list of terminal carbons and the longest path
+    """
     # Find true terminal carbon atoms
     true_terminal_carbons = list(chain.from_iterable(mol.GetSubstructMatches(Chem.MolFromSmarts('[#6&D1]'))))
     # Find bespoke terminal carbon atoms
@@ -384,8 +445,7 @@ def get_augmented_scaffold(mol: Chem.Mol,
     # Only consider bespoke terminal carbons if no true terminal carbons are found
     if len(true_terminal_carbons) > 0:
         # Include bespoke terminal carbons only if they are not part of the longest shortest path
-        longest_shortest_path = paths.get_min_max_shortest_path(mol, true_terminal_carbons, bsc_atoms,
-                                                                                 opts=opts)
+        longest_shortest_path = paths.get_min_max_shortest_path(mol, true_terminal_carbons, bsc_atoms, opts=opts)
         if opts.debug:
             longest_shortest_path = longest_shortest_path[0]
         terminal_carbons = list(set(true_terminal_carbons) | set(atom
@@ -399,50 +459,52 @@ def get_augmented_scaffold(mol: Chem.Mol,
         if opts.debug:
             longest_shortest_path = longest_shortest_path[0]
         terminal_carbons = [atom
-                               for atom in bespoke_terminal_carbons
-                               if atom not in longest_shortest_path or atom in [longest_shortest_path[0], longest_shortest_path[-1]]]
+                            for atom in bespoke_terminal_carbons
+                            if atom not in longest_shortest_path or atom in [longest_shortest_path[0], longest_shortest_path[-1]]]
     # Find the longest shortest path between terminal carbons
     longest_shortest_path = paths.get_min_max_shortest_path(mol, terminal_carbons, bsc_atoms, opts=opts)
     if opts.debug:
         longest_shortest_path = longest_shortest_path[0]
-    # Consider the case when the longest path has a length of 3 and contains both terminal carbons
-    if len(terminal_carbons) == 2 and len(set(terminal_carbons).difference(longest_shortest_path)) == 0 and len(longest_shortest_path) == 3:
-        common_atoms = [x for x in longest_shortest_path if x in terminal_carbons]
-        if mol.GetAtomWithIdx(common_atoms[0]).GetSymbol() == 'C':
-            new_atom_list_to_remove = terminal_carbons[1:]
-            rw_mol = Chem.RWMol(mol)
-            utils.unassign_chirality_and_delete(rw_mol, new_atom_list_to_remove)
-            mol = rw_mol.GetMol()
-            mol = utils.fix_valence(mol)
-    else:
-        atoms_to_remove = set()
-        atoms_to_replace = set()
-        # Obtain the union with the longest path
-        extended_scaffold = list(set(bsc_atoms).union(longest_shortest_path))
-        # Remove all paths that start from the terminal atom and are disjoint of the longest path
-        for atom in mol.GetAtoms():
-            if len(atom.GetNeighbors()) > 1:
-                continue
-            atom_id = atom.GetIdx()
-            # Removing any side chain of no interest
-            if atom_id not in extended_scaffold and atom_id not in terminal_carbons and atom_id not in dsc_atoms:
-                path = paths.get_shortest_shortest_path(mol, atom_id, list(set(bsc_atoms + dsc_atoms))) # terminal_carbons
+    return terminal_carbons, longest_shortest_path
+
+
+def _prune_side_chains(mol: Chem.Mol, longest_shortest_path: list[int], terminal_carbons: list[int], bsc_atoms: list[int], dsc_atoms: list[int]) -> tuple[list[int], list[int]]:
+    """Identify all atoms from side chains that should be pruned or replaced.
+    
+    :param mol: the molecule
+    :param longest_shortest_path: the longest path of the molecule
+    :param terminal_carbons: the list of indices of terminal carbons
+    :param bsc_atoms: atom indices of the basic scaffold
+    :param dsc_atoms: atom indices of the decorated scaffold
+    :return: the list of indices of atoms to remove, and of atoms to replace
+    """
+    atoms_to_remove = set()
+    atoms_to_replace = set()
+    # Obtain the union with the longest path
+    extended_scaffold = list(set(bsc_atoms).union(longest_shortest_path))
+    # Remove all paths that start from the terminal atom and are disjoint of the longest path
+    for atom in mol.GetAtoms():
+        if len(atom.GetNeighbors()) > 1:
+            continue
+        atom_id = atom.GetIdx()
+        # Removing any side chain of no interest
+        if atom_id not in extended_scaffold and atom_id not in terminal_carbons and atom_id not in dsc_atoms:
+            path = paths.get_shortest_shortest_path(mol, atom_id, list(set(bsc_atoms + dsc_atoms))) # terminal_carbons
+            if set(path[:-1]).isdisjoint(longest_shortest_path):
+                root_atom = mol.GetAtomWithIdx(path[-1])
+                if root_atom.IsInRing() and root_atom.GetSymbol() != 'C' and root_atom.GetIsAromatic():
+                    atoms_to_replace.add((path[-1], path[-2]))
+                else:
+                    atoms_to_remove |= set(path[:-1])
+            # Removing side chains connected to the longest path
+            if terminal_carbons:
+                path = paths.get_shortest_shortest_path(mol, atom_id, terminal_carbons)
                 if set(path[:-1]).isdisjoint(longest_shortest_path):
                     root_atom = mol.GetAtomWithIdx(path[-1])
                     if root_atom.IsInRing() and root_atom.GetSymbol() != 'C' and root_atom.GetIsAromatic():
                         atoms_to_replace.add((path[-1], path[-2]))
                     else:
                         atoms_to_remove |= set(path[:-1])
-                # Removing side chains connected to the longest path
-                if terminal_carbons:
-                    path = paths.get_shortest_shortest_path(mol, atom_id, terminal_carbons)
-                    if set(path[:-1]).isdisjoint(longest_shortest_path):
-                        root_atom = mol.GetAtomWithIdx(path[-1])
-                        x, y, z = root_atom.IsInRing(), root_atom.GetSymbol(), root_atom.GetIsAromatic()
-                        if root_atom.IsInRing() and root_atom.GetSymbol() != 'C' and root_atom.GetIsAromatic():
-                            atoms_to_replace.add((path[-1], path[-2]))
-                        else:
-                            atoms_to_remove |= set(path[:-1])
         # Remove any side chain neither part of the scaffold nor the longest path
         for terminal_carbon in terminal_carbons:
             if terminal_carbon not in extended_scaffold:
@@ -461,40 +523,10 @@ def get_augmented_scaffold(mol: Chem.Mol,
                         atoms_to_replace.add((path[-1], path[-2]))
                 else:
                     atoms_to_remove |= set(extended_path)
-        # Unmark atoms of the decorated scaffold for removal or replacement
-        for atom_id in dsc_atoms:
-            if atom_id in atoms_to_remove:
-                atoms_to_remove.remove(atom_id)
-        atoms_to_replace = list(atoms_to_replace)
-        for i in range(len(atoms_to_replace)):
-            if atoms_to_replace[i][1] in dsc_atoms:
-                del atoms_to_replace[i]
-        # Keep track of original atom ids after deletion of others
-        for atom in mol.GetAtoms():
-            atom.SetIntProp('__original_id__', atom.GetIdx())
-        # Remove atoms marked from removal
-        rw_mol = Chem.RWMol(mol)
-        utils.unassign_chirality_and_delete(rw_mol, atoms_to_remove)
-        old_to_new_ids = {atom.GetIntProp('__original_id__'): atom.GetIdx()
-                          for atom in rw_mol.GetAtoms()}
-        for root, atom in atoms_to_replace:
-            rw_mol.RemoveAtom(old_to_new_ids[atom])
-            w = rw_mol.AddAtom(Chem.Atom('H'))
-            rw_mol.AddBond(old_to_new_ids[root], w, Chem.BondType.SINGLE)
-            rw_mol.GetAtomWithIdx(old_to_new_ids[root]).UpdatePropertyCache()
-        mol = rw_mol.GetMol()
-        with BlockLogs():
-            Chem.SanitizeMol(mol)
-        mol = utils.fix_valence(mol)
-    atoms_to_remove = utils.identify_terminal_atoms(mol)
-    rw_mol = Chem.RWMol(mol)
-    utils.unassign_chirality_and_delete(rw_mol, atoms_to_remove)
-    mol = rw_mol.GetMol()
-    with BlockLogs():
-        Chem.SanitizeMol(mol)
-        Chem.SanitizeMol(mol)
-    mol = utils.fix_valence(mol)
-    return Chem.RemoveHs(mol)
+    # Unmark atoms of the decorated scaffold for removal or replacement
+    atoms_to_remove.difference_update(dsc_atoms)
+    atoms_to_replace = list({(root, atom) for root, atom in atoms_to_replace if atom not in dsc_atoms})
+    return atoms_to_remove, atoms_to_replace
 
 
 def get_basic_framework(mol: Chem.Mol) -> Chem.Mol:
