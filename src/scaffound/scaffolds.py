@@ -397,7 +397,7 @@ def get_augmented_scaffold(mol: Chem.Mol,
     # Only consider bespoke terminal carbons if no true terminal carbons are found
     if len(true_terminal_carbons) > 0:
         # Include bespoke terminal carbons only if they are not part of the longest shortest path
-        longest_shortest_path = paths.get_min_max_shortest_path_without_symmetry(mol, true_terminal_carbons, bsc_atoms,
+        longest_shortest_path = paths.get_min_max_shortest_path(mol, true_terminal_carbons, bsc_atoms,
                                                                                  opts=opts)
         if opts.debug:
             longest_shortest_path = longest_shortest_path[0]
@@ -408,14 +408,14 @@ def get_augmented_scaffold(mol: Chem.Mol,
         terminal_carbons = bespoke_terminal_carbons
     else:
         # Consider bespoke terminal carbons only if they are not part of the longest shortest path
-        longest_shortest_path = paths.get_min_max_shortest_path_without_symmetry(mol, bespoke_terminal_carbons, bsc_atoms, opts=opts)
+        longest_shortest_path = paths.get_min_max_shortest_path(mol, bespoke_terminal_carbons, bsc_atoms, opts=opts)
         if opts.debug:
             longest_shortest_path = longest_shortest_path[0]
         terminal_carbons = [atom
                                for atom in bespoke_terminal_carbons
                                if atom not in longest_shortest_path or atom in [longest_shortest_path[0], longest_shortest_path[-1]]]
     # Find the longest shortest path between terminal carbons
-    longest_shortest_path = paths.get_min_max_shortest_path_without_symmetry(mol, terminal_carbons, bsc_atoms, opts=opts)
+    longest_shortest_path = paths.get_min_max_shortest_path(mol, terminal_carbons, bsc_atoms, opts=opts)
     if opts.debug:
         longest_shortest_path = longest_shortest_path[0]
     # Consider the case when the longest path has a length of 3 and contains both terminal carbons
