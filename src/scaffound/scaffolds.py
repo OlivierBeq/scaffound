@@ -25,22 +25,22 @@ class MolecularAnatomy:
         https://doi.org/10.1186/s13321-021-00526-y
     """
 
-    def __init__(self, mol: Chem.Mol, loose_ez_stereo: bool = False, opts: paths.MinMaxShortestPathOptions = None):
+    def __init__(self, mol: Chem.Mol, original: bool = False, opts: paths.MinMaxShortestPathOptions = None):
         """Create the anatomy of a molecule.
 
         :param mol: Molecule from which to obtain the scaffold anatomy.
-        :param loose_ez_stereo: Omit cis/trans stereo in scaffolds (as in the `Molecular Anatomy`).
+        :param original: if False, toggle the inclusion of derivations from the input molecule's generic, 
+        saturated, and wireframe graphs.
+        :param opts: Longest path parameters for augmented scaffolds/frameworks/wireframes.
         """
         self.mol = mol
         self.opts = opts or paths.MinMaxShortestPathOptions()
         # Get the basic scaffold
-        self._bs = get_basic_scaffold(mol, loose_ez_stereo=loose_ez_stereo)
-        # bs_ids = get_basic_scaffold(mol, loose_ez_stereo=loose_ez_stereo, only_atom_indices=True)
+        self._bs = get_basic_scaffold(mol)
         # Get the decorated scaffold
-        self._ds = get_decorated_scaffold(mol, loose_ez_stereo=loose_ez_stereo)
-        # ds_ids = get_decorated_scaffold(mol, basic_scaffold_atoms=bs_ids, loose_ez_stereo=loose_ez_stereo, only_atom_indices=True)
+        self._ds = get_decorated_scaffold(mol)
         # Get the augmented scaffolds
-        self._as = get_augmented_scaffold(mol, loose_ez_stereo=loose_ez_stereo, opts=opts)
+        self._as = get_augmented_scaffold(mol, opts=opts)
         # Obtain the frameworks
         self._bf = get_generic_graph(self._bs)
         self._df = get_generic_graph(self._ds)
@@ -50,10 +50,13 @@ class MolecularAnatomy:
         self._dw = get_generic_graph(get_saturated_graph(self._ds))
         self._aw = get_generic_graph(get_saturated_graph(self._as))
         # Obtain generic, saturated and wireframe graphs
-        self.gg = get_generic_graph(self.mol)
-        self.sg = get_saturated_graph(self.mol)
-        self.wg = get_generic_graph(get_saturated_graph(self.mol))
-
+        self.original = original
+        if not self.original:
+            self.gg = get_generic_graph(self.mol)
+            self.sg = get_saturated_graph(self.mol)
+            self.wg = get_generic_graph(get_saturated_graph(self.mol))
+            self.generic_anatomy = MolecularAnatomy(self.gg, original=True, opts=self.opts)
+            self.saturated_anatomy = MolecularAnatomy(self.sg, original=True, opts=self.opts)
 
     @property
     def basic_scaffold(self):
@@ -104,14 +107,8 @@ class MolecularAnatomy:
         return self.wg
 
     def to_dict(self, original: bool = False):
-        """Return the Molecular Anatomy as a dictionary.
-
-        :param original: If `True`, return only the basic, decorated and augmented scaffolds, frameworks and wireframes.
-        Otherwise, include the saturated and generic graphs of the molecule and their scaffolds, frameworks and wireframes.
-        """
-        if not original:
-            saturated_anatomy = MolecularAnatomy(self.saturated_graph, opts=self.opts)
-            generic_anatomy = MolecularAnatomy(self.generic_graph, opts=self.opts)
+        """Return the Molecular Anatomy as a dictionary."""
+        if not self.original:
             return {'basic scaffold': self.basic_scaffold,
                     'decorated scaffold': self.decorated_scaffold,
                     'augmented scaffold': self.augmented_scaffold,
@@ -122,13 +119,13 @@ class MolecularAnatomy:
                     'decorated wireframe': self.decorated_wireframe,
                     'augmented wireframe': self.augmented_wireframe,
                     'saturated graph': self.saturated_graph,
-                    'saturated basic scaffold': saturated_anatomy.basic_scaffold,
-                    'saturated augmented scaffold': saturated_anatomy.augmented_scaffold,
-                    'saturated basic framework': saturated_anatomy.basic_framework,
-                    'saturated augmented framework': saturated_anatomy.augmented_framework,
+                    'saturated basic scaffold': self.saturated_anatomy.basic_scaffold,
+                    'saturated augmented scaffold': self.saturated_anatomy.augmented_scaffold,
+                    'saturated basic framework': self.saturated_anatomy.basic_framework,
+                    'saturated augmented framework': self.saturated_anatomy.augmented_framework,
                     'generic graph': self.generic_graph,
-                    'generic augmented scaffold': generic_anatomy.augmented_scaffold,
-                    'generic augmented wireframe': generic_anatomy.augmented_wireframe,
+                    'generic augmented scaffold': self.generic_anatomy.augmented_scaffold,
+                    'generic augmented wireframe': self.generic_anatomy.augmented_wireframe,
                     }
         return {'basic scaffold': self.basic_scaffold,
                 'decorated scaffold': self.decorated_scaffold,
@@ -153,19 +150,13 @@ class MolecularAnatomy:
             raise ImportError('Missing optional dependency \'pandas\'.  Use pip or conda to install pandas.')
         return pd.Series(self.to_dict(original=original))
 
-    def as_table(self, original: bool = False):
-        """Format the Molecular Anatomy as Table S1 provided by authors of the seminal article.
-
-        :param original: If `True`, return only the basic, decorated and augmented scaffolds, frameworks and wireframes.
-        Otherwise, include the saturated and generic graphs of the molecule and their scaffolds, frameworks and wireframes.
-        """
+    def as_table(self):
+        """Format the Molecular Anatomy as Table S1 provided by authors of the seminal article."""
         try:
             import pandas as pd
         except ModuleNotFoundError:
             raise ImportError('Missing optional dependency \'pandas\'.  Use pip or conda to install pandas.')
-        if not original:
-            saturated_anatomy = MolecularAnatomy(self.saturated_graph, opts=self.opts)
-            generic_anatomy = MolecularAnatomy(self.generic_graph, opts=self.opts)
+        if not self.original:
             return pd.Series({'Molecule_SMILES': Chem.MolToSmiles(self.mol),
                               'Molecule_inchikey': Chem.MolToInchiKey(self.mol),
                               'Augmented_Scaffold_inchikey': Chem.MolToInchiKey(self.augmented_scaffold),
@@ -188,20 +179,20 @@ class MolecularAnatomy:
                               'Basic_Wireframe_SMILES': Chem.MolToSmiles(self.basic_wireframe),
                               'Saturated_graph_inchikey': Chem.MolToInchiKey(self.saturated_graph),
                               'Saturated_graph_SMILES': Chem.MolToSmiles(self.saturated_graph),
-                              'Saturated_graph_Augmented_Scaffold_inchikey': Chem.MolToInchiKey(saturated_anatomy.augmented_scaffold),
-                              'Saturated_graph_Augmented_Scaffold_SMILES': Chem.MolToSmiles(saturated_anatomy.augmented_scaffold),
-                              'Saturated_graph_Augmented_Framework_inchikey': Chem.MolToInchiKey(saturated_anatomy.augmented_framework),
-                              'Saturated_graph_Augmented_Framework_smiles': Chem.MolToSmiles(saturated_anatomy.augmented_framework),
-                              'Saturated_graph_Basic_Scaffold_inchikey': Chem.MolToInchiKey(saturated_anatomy.basic_scaffold),
-                              'Saturated_graph_Basic_Scaffold_SMILES': Chem.MolToSmiles(saturated_anatomy.basic_scaffold),
-                              'Saturated_graph_Basic_Framework_inchikey': Chem.MolToInchiKey(saturated_anatomy.basic_framework),
-                              'Saturated_graph_Basic_Framework_SMILES': Chem.MolToSmiles(saturated_anatomy.basic_framework),
+                              'Saturated_graph_Augmented_Scaffold_inchikey': Chem.MolToInchiKey(self.saturated_anatomy.augmented_scaffold),
+                              'Saturated_graph_Augmented_Scaffold_SMILES': Chem.MolToSmiles(self.saturated_anatomy.augmented_scaffold),
+                              'Saturated_graph_Augmented_Framework_inchikey': Chem.MolToInchiKey(self.saturated_anatomy.augmented_framework),
+                              'Saturated_graph_Augmented_Framework_smiles': Chem.MolToSmiles(self.saturated_anatomy.augmented_framework),
+                              'Saturated_graph_Basic_Scaffold_inchikey': Chem.MolToInchiKey(self.saturated_anatomy.basic_scaffold),
+                              'Saturated_graph_Basic_Scaffold_SMILES': Chem.MolToSmiles(self.saturated_anatomy.basic_scaffold),
+                              'Saturated_graph_Basic_Framework_inchikey': Chem.MolToInchiKey(self.saturated_anatomy.basic_framework),
+                              'Saturated_graph_Basic_Framework_SMILES': Chem.MolToSmiles(self.saturated_anatomy.basic_framework),
                               'Generic_graph_inchikey': Chem.MolToInchiKey(self.generic_graph),
                               'Generic_graph_SMILES': Chem.MolToSmiles(self.generic_graph),
-                              'Generic_graph_Augmented_Scaffold_inchikey': Chem.MolToInchiKey(generic_anatomy.augmented_scaffold),
-                              'Generic_graph_Augmented_Scaffold_SMILES': Chem.MolToSmiles(generic_anatomy.augmented_scaffold),
-                              'Generic_graph_Augmented_Wireframe_inchikey': Chem.MolToInchiKey(generic_anatomy.augmented_wireframe),
-                              'Generic_graph_Augmented_Wireframe_smiles': Chem.MolToSmiles(generic_anatomy.augmented_wireframe),
+                              'Generic_graph_Augmented_Scaffold_inchikey': Chem.MolToInchiKey(self.generic_anatomy.augmented_scaffold),
+                              'Generic_graph_Augmented_Scaffold_SMILES': Chem.MolToSmiles(self.generic_anatomy.augmented_scaffold),
+                              'Generic_graph_Augmented_Wireframe_inchikey': Chem.MolToInchiKey(self.generic_anatomy.augmented_wireframe),
+                              'Generic_graph_Augmented_Wireframe_smiles': Chem.MolToSmiles(self.generic_anatomy.augmented_wireframe),
                               })
         return pd.Series({'Molecule_SMILES': Chem.MolToSmiles(self.mol),
                           'Molecule_inchikey': Chem.MolToInchiKey(self.mol),

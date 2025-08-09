@@ -238,9 +238,9 @@ class ImprovedMolecularAnatomyTestCase(unittest.TestCase):
             for mol in data.mol:
                 anatomy = scaffound.MolecularAnatomy(mol)
                 gg = anatomy.generic_graph
-                scaffound.MolecularAnatomy(gg).as_table(original=False)
+                scaffound.MolecularAnatomy(gg).as_table()
                 sg = anatomy.saturated_graph
-                scaffound.MolecularAnatomy(sg).as_table(original=False)
+                scaffound.MolecularAnatomy(sg).as_table()
         except Exception as e:
             self.fail("MolecularAnatomy raised an exception: {}".format(e))
 
