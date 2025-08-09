@@ -21,6 +21,10 @@ A Python library for extracting multiple types of molecular scaffolds, framework
   </a>
   <img src="https://badge.fury.io/py/scaffound.svg" alt="PyPI version"/>
   <img src="https://img.shields.io/pypi/pyversions/scaffound" alt="PyPI - Python Version"/>
+  <a href="https://github.com/OlivierBeq/scaffound/actions/workflows/ci.yml">
+    <img src="https://github.com/OlivierBeq/scaffound/actions/workflows/ci.yml/badge.svg?branch=master" alt="CI Status"/>
+  </a>
+
 </p>
 
 # Core concepts ⚛️
