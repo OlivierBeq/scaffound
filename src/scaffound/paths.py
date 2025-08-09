@@ -71,22 +71,22 @@ class MinMaxShortestPathOptions:
         self.debug = debug
 
 
-def get_min_max_shortest_path_without_symmetry(
+def get_min_max_shortest_path(
         mol: Chem.Mol,
         indices: list[int],
-        basic_scaffold: list[int] = None,
+        core: list[int] = None,
         opts: MinMaxShortestPathOptions = None) -> list[int] | tuple[list[int], dict]:
     """
     Find the longest/shortest path between any two points of a list of atom indices,
-    with a tie-breaking rule based on a basic scaffold.
+    with a tie-breaking rule based on a core.
 
     When multiple paths have the same longest/shortest length, it prefers paths that,
-    after removing atoms belonging to the basic_scaffold, result in chemically
+    after removing atoms belonging to the core, result in chemically
     unique fragments.
 
     :param mol: The molecule to search within.
     :param possible_endpoints: List of candidate atom indices for the endpoint.
-    :param basic_scaffold: A list of atom indices representing a scaffold. Used for tie-breaking. Defaults to empty.
+    :param core: A list of atom indices representing a scaffold. Used for tie-breaking. Defaults to empty.
     :param opts: Options for each of the selection steps.
     :return: A list of atom indices for the chosen shortest path, together with debugging information if opts.debug is True.
     """
@@ -101,26 +101,77 @@ def get_min_max_shortest_path_without_symmetry(
     Chem.SanitizeMol(mol)
     if opts is None:
         opts = MinMaxShortestPathOptions()
-    if opts.original_algorithm:
-        return get_original_min_max_shortest_path_without_symmetry(mol=mol, indices=indices,
-                                                                   basic_scaffold=basic_scaffold,
-                                                                   opts=opts)
+    debug_info = OrderedDict({'input_smiles': Chem.MolToSmiles(mol, canonical=False)})
+    # Candidate path finding
+    _, candidate_paths, _, debug_info_ = _find_all_paths_with_minmax_length(mol=mol, indices=indices, core=core, opts=opts)
     if opts.debug:
-        debug_info = OrderedDict({'input_smiles': Chem.MolToSmiles(mol, canonical=False)})
-    scaffold_set = set(basic_scaffold) or set()
+        debug_info |= debug_info_
+    # List of tie-breaker functions to apply in order
+    if opts.original_algorithm:
+        tie_breakers = [_break_tie_by_asymmetry]
+    else:
+        tie_breakers = [
+            _break_tie_by_ring_count,
+            _break_tie_by_ring_size,
+            _break_tie_by_aromaticity,
+            _break_tie_by_total_ring_atoms,
+            _break_tie_by_asymmetry,
+            _break_tie_by_total_atomic_number,
+            _break_tie_by_atypical_isotopes,
+            _break_tie_by_atomic_num_topology,
+            _break_tie_by_bond_order_topology,
+        ]
+    # Tie breaking
+    for breaker in tie_breakers:
+        if len(candidate_paths) <= 1:
+            break
+        _, candidate_paths, _, debug_info_ = breaker(mol, candidate_paths, opts)
+        if opts.debug:
+            debug_info |= debug_info_
+    # No unique path found
+    if len(candidate_paths) > 1:
+        # All paths should be symmetrically identical, choose one
+        debug_info['result'] = f'no unique path found; returning the first one'
+    # No path found
+    elif len(candidate_paths) == 0:
+        candidate_paths = [[]]
+    # Return
+    if opts.debug:
+        return (candidate_paths[0] if candidate_paths else []), debug_info
+    return candidate_paths[0] if candidate_paths else []
+
+
+def _find_all_paths_with_minmax_length(
+        mol: Chem.Mol,
+        indices: list[int],
+        core: list[int],
+        opts: MinMaxShortestPathOptions) -> tuple[int, list[int], list[int], dict]:
+    """Find all longest or shortest shortest paths in a molecule.
+    
+    :param mol: the molecule
+    :param indices: a list of atom indices, pairs of which define the extremities of the path(s) to identify;
+    if no path can be identified, then all paths with one extremity starting with one of these indices and with the other
+    extremity belonging to the `core` are checked.
+    :param core: a list of possible atom indices that the identified path(s) must go through.
+    :param opt: options for the selection of the path(s)
+    :return: a tuple of the minimum (or maximum) length of the identified path(s), the identified path(s),
+    the rejected_path(s), and a dictionary of debugging information.
+    """
+    debug_info = OrderedDict()
+    # Drop atom duplicates from the basic scaffold
+    core_set = set(core) or set()
     # Find all paths and their lengths
     all_paths = []
     for start, end in combinations(indices, 2):
-        # Ensure start and end are not the same
+        # Ensure start and end are not the same and path goes through the core
         path = Chem.GetShortestPath(mol, start, end)
-        if path and not scaffold_set.isdisjoint(path):
+        if path and not core_set.isdisjoint(path):
             all_paths.append(list(path))
-    if opts.debug:
-        debug_info["all_paths_terminal_atoms"] = all_paths
+    debug_info["all_paths_terminal_atoms"] = all_paths
     if not all_paths:
-        # No path between 2 terminal carbon atoms exists
-        # Retry with the basic scaffold
-        for start, end in product(indices, scaffold_set):
+        # No path between a pair of extremities exists
+        # Retry with one of them belonging to the core
+        for start, end in product(indices, core_set):
             if start == end:
                 continue
             # Ensure start and end are not the same
@@ -129,115 +180,191 @@ def get_min_max_shortest_path_without_symmetry(
                 all_paths.append(list(path))
         if not all_paths:
             # Cannot find a path
-            if opts.debug:
-                debug_info["result"] = 'no path found'
-                return [], debug_info
-            return []
-        if opts.debug:
-            debug_info["all_paths_terminal_and_scaffold_atoms"] = all_paths
+            debug_info["result"] = 'no path found'
+            return None, [], [], debug_info
+        debug_info["all_paths_terminal_and_scaffold_atoms"] = all_paths
     # Identify all paths with the maximum/minimum length
     minmax_len = opts.select_path_len(map(len, all_paths))
-    shortest_paths_group = [p for p in all_paths if len(p) == minmax_len]
-    if opts.debug:
-        debug_info[f'{str_fn(opts.select_path_len)}_path_len'] = minmax_len
-        debug_info[f'paths_with_{str_fn(opts.select_path_len)}_len'] = shortest_paths_group
-        debug_info[f'paths_without_{str_fn(opts.select_path_len)}_len'] = [p for p in all_paths if len(p) != minmax_len]
-    # No tie-break needed if there's only one shortest path
-    if len(shortest_paths_group) <= 1:
-        if opts.debug:
-            debug_info["result"] = (f'unique {str_fn(opts.select_path_len)} path found'
-                                    if len(shortest_paths_group)
+    selected_paths = [p for p in all_paths if len(p) == minmax_len]
+    rejected_paths = [p for p in all_paths if len(p) != minmax_len]
+    debug_info[f'{str_fn(opts.select_path_len)}_path_len'] = minmax_len
+    debug_info[f'paths_with_{str_fn(opts.select_path_len)}_len'] = selected_paths
+    debug_info[f'paths_without_{str_fn(opts.select_path_len)}_len'] = rejected_paths
+    if len(selected_paths) <= 1:
+        debug_info["result"] = (f'unique {str_fn(opts.select_path_len)} path found'
+                                if len(selected_paths)
+                                else 'no path found')
+    return minmax_len, selected_paths, rejected_paths, debug_info
+
+
+def _apply_tie_breaker(
+    candidate_paths: list[list[int]],
+    metric_fn: callable,
+    selection_fn: callable,
+    *,  # Makes subsequent arguments keyword-only for clarity
+    debug_name: str = None,
+    custom_debug_formatter_fn: callable = None
+) -> tuple[any, list[int], list[int], dict]:
+    """Generic helper to apply any tie-breaking rule.
+    
+    :param candidate_paths: list of all paths to be evaluated
+    :param metric_fn: metric to apply to paths
+    :param selection_fn: selection function (min or max) to apply to path metrics
+    :param debug_name: name of the tie-breaking rule
+    :param custom_debug_formatter_fn: custom debugger function
+    """
+    # Check arguments
+    assert debug_name or custom_debug_formatter_fn, \
+        "Must provide 'debug_name' for default debugging, or a 'custom_debug_formatter_fn'."
+    # Calculate metrics for each path
+    paths_with_metrics = [(path, metric_fn(path)) for path in candidate_paths]
+    if not paths_with_metrics:
+        return None, [], candidate_paths, OrderedDict({"result": "no path found"})
+    # Filter paths
+    valid_metrics = [metric for _, metric in paths_with_metrics if metric is not None]
+    if not valid_metrics:
+        return None, [], candidate_paths, OrderedDict({"result": "no path found"})
+    # Select paths
+    winning_metric = selection_fn(valid_metrics)
+    selected_paths = [path for path, metric in paths_with_metrics if metric == winning_metric]
+    rejected_paths = [path for path, metric in paths_with_metrics if metric != winning_metric]
+    # Log debug info
+    if custom_debug_formatter_fn:
+        # Use the provided custom formatter
+        debug_info = custom_debug_formatter_fn(winning_metric=winning_metric,
+                                               selected=selected_paths,
+                                               rejected=rejected_paths,
+                                               selection_fn=selection_fn,
+                                               paths_with_metrics=paths_with_metrics)
+    else:
+        # Use the default, built-in formatter
+        sel_fn_str = str_fn(selection_fn)
+        debug_info = OrderedDict()
+        debug_info[f'{sel_fn_str}_{debug_name}'] = winning_metric
+        debug_info[f'paths_with_{sel_fn_str}_{debug_name}'] = selected_paths
+        debug_info[f'paths_without_{sel_fn_str}_{debug_name}'] = rejected_paths
+        if len(selected_paths) <= 1:
+            debug_info["result"] = (f'unique path with {sel_fn_str} {debug_name.replace("_", " ")} found'
+                                    if len(selected_paths)
                                     else 'no path found')
-            return (shortest_paths_group[0] if shortest_paths_group else []), debug_info
-        return shortest_paths_group[0] if shortest_paths_group else []
+    return winning_metric, selected_paths, rejected_paths, debug_info
+
+
+def _break_tie_by_ring_count(mol, candidate_paths, opts):
+    """Determine paths, from given candidates, that satisfy the ring count selection criterion.
+    
+    :param mol: the molecule from which the paths are identified
+    :param candidate_paths: candidate paths to investigate
+    :param opts: selection criteria.
+    :return: a tuple of the minimum (or maximum) ring count in the identified path(s), the identified path(s),
+    the rejected_path(s), and a dictionary of debugging information.
+    """
+    # Map each atom to the rings it belongs to
+    ring_info = mol.GetRingInfo()
+    atom_to_rings_map = [[] for _ in range(mol.GetNumAtoms())]
+    for ring_idx, ring_atoms in enumerate(ring_info.AtomRings()):
+        for atom_idx in ring_atoms:
+            atom_to_rings_map[atom_idx].append(ring_idx)
+    # Define the metric: count the number of unique rings a path passes through
+    metric = lambda path: len(set(ring for idx in path for ring in atom_to_rings_map[idx]))
+    # Call the generic helper using the default debugger
+    return _apply_tie_breaker(candidate_paths=candidate_paths,
+                              metric_fn=metric,
+                              selection_fn=opts.select_ring_count,
+                              debug_name='ring_count')
+
+
+def _break_tie_by_ring_size(mol, candidate_paths, opts):
+    """Determine paths, from given candidates, that satisfy the total ring size selection criterion.
+    
+    :param mol: the molecule from which the paths are identified
+    :param candidate_paths: candidate paths to investigate
+    :param opts: selection criteria.
+    :return: a tuple of the minimum (or maximum) total ring size in the identified path(s), the identified path(s),
+    the rejected_path(s), and a dictionary of debugging information.
+    """
     # Map each atom to the rings it belongs to
     ring_info = mol.GetRingInfo()
     atom_to_rings_map = [[] for _ in range(mol.GetNumAtoms())]
     ringsize_map = {}
-    ring_aromat_map = {}
     for ring_idx, ring_atoms in enumerate(ring_info.AtomRings()):
         for atom_idx in ring_atoms:
             atom_to_rings_map[atom_idx].append(ring_idx)
         ringsize_map[ring_idx] = len(ring_atoms)
+    # Define the metric: calculate the sum of sizes of all unique rings the path intersects
+    def metric(path):
+        visited_rings = {ring for idx in path for ring in atom_to_rings_map[idx]}
+        return sum(ringsize_map[ring_idx] for ring_idx in visited_rings)
+    # Call the generic helper using the default debugger
+    return _apply_tie_breaker(candidate_paths=candidate_paths,
+                              metric_fn=metric,
+                              selection_fn=opts.select_ring_size,
+                              debug_name='total_ring_size')
+
+
+def _break_tie_by_aromaticity(mol, candidate_paths, opts):
+    """Determine paths, from given candidates, that satisfy the aromatic ring count selection criterion.
+    
+    :param mol: the molecule from which the paths are identified
+    :param candidate_paths: candidate paths to investigate
+    :param opts: selection criteria.
+    :return: a tuple of the minimum (or maximum) ring count in the identified path(s), the identified path(s),
+    the rejected_path(s), and a dictionary of debugging information.
+    :return: a tuple of the minimum (or maximum) aromatic ring count in the identified path(s), the identified path(s),
+    the rejected_path(s), and a dictionary of debugging information.
+
+    """
+    # Map each atom to the rings it belongs to
+    ring_info = mol.GetRingInfo()
+    atom_to_rings_map = [[] for _ in range(mol.GetNumAtoms())]
+    ring_aromat_map = {}
+    for ring_idx, ring_atoms in enumerate(ring_info.AtomRings()):
+        for atom_idx in ring_atoms:
+            atom_to_rings_map[atom_idx].append(ring_idx)
         ring_aromat_map[ring_idx] = all(mol.GetAtomWithIdx(atom).GetIsAromatic() for atom in ring_atoms)
-    # Find paths that go through the minimum number of rings
-    paths_with_ring_counts = [] # number of rings
-    paths_with_ringsize = [] # size of rings
-    paths_with_ring_aromat_count = [] # are rings aromatic
-    for path in shortest_paths_group:
-        visited_rings = set()
-        for atom_idx in path:
-            # Add all rings this atom belongs to into the set
-            visited_rings.update(atom_to_rings_map[atom_idx])
-        paths_with_ring_counts.append((path, len(visited_rings)))
-        # Get the size of each ring in the set of unique rings in this path
-        paths_with_ringsize.append((path, sum(ringsize_map[ring_idx] for ring_idx in visited_rings)))
-        # Get the number of aromatic rings
-        paths_with_ring_aromat_count.append((path, sum(ring_aromat_map[ring_idx] for ring_idx in visited_rings)))
-    min_visited_rings = opts.select_ring_count(count for path, count in paths_with_ring_counts)
-    paths_min_rings = [path for path, count in paths_with_ring_counts if count == min_visited_rings]
-    if opts.debug:
-        debug_info[f'{str_fn(opts.select_ring_count)}_ring_count'] = min_visited_rings
-        debug_info[f'paths_with_{str_fn(opts.select_ring_count)}_rings'] = paths_min_rings
-        debug_info[f'paths_without_{str_fn(opts.select_ring_count)}_rings'] = [path for path, count in paths_with_ring_counts if count != min_visited_rings]
-    # No further tie-break needed if there's only one shortest path
-    if len(paths_min_rings) == 1:
-        if opts.debug:
-            debug_info["result"] = f'unique path with {str_fn(opts.select_ring_count)} rings found'
-            return paths_min_rings[0], debug_info
-        return paths_min_rings[0]
-    # Prioritize paths with smaller rings
-    min_total_ringsize = opts.select_ring_size(total_ringsize
-                                               for path, total_ringsize in paths_with_ringsize
-                                               if path in paths_min_rings)
-    paths_min_ringsize = [path for path, total_ringsize in paths_with_ringsize
-                          if path in paths_min_rings and total_ringsize == min_total_ringsize]
-    if opts.debug:
-        debug_info[f'{str_fn(opts.select_ring_size)}_ring_size'] = min_total_ringsize
-        debug_info[f'paths_with_{str_fn(opts.select_ring_size)}_ring_size'] = paths_min_ringsize
-        debug_info[f'paths_without_{str_fn(opts.select_ring_size)}_ring_size'] = [path
-                                                                                  for (path, total_ringsize), (_, count) in zip(paths_with_ringsize, paths_with_ring_counts)
-                                                                                  if count == min_visited_rings and total_ringsize != min_total_ringsize]
-    if len(paths_min_ringsize) == 1:
-        if opts.debug:
-            debug_info["result"] = f'unique path with {str_fn(opts.select_ring_size)} ring size'
-            return paths_min_ringsize[0], debug_info
-        return paths_min_ringsize[0]
-    # Prioritize paths with aromatic rings
-    max_arom_rings = opts.select_arom_rings(count for path, count in paths_with_ring_aromat_count if path in paths_min_ringsize)
-    paths_max_arom_rings = [path for path, count in paths_with_ring_aromat_count if path in paths_min_ringsize and count == max_arom_rings]
-    if opts.debug:
-        debug_info[f'{str_fn(opts.select_arom_rings)}_aromatic_rings'] = max_arom_rings
-        debug_info[f'paths_with_{str_fn(opts.select_arom_rings)}_aromatic_rings'] = paths_max_arom_rings
-        debug_info[f'paths_without_{str_fn(opts.select_arom_rings)}_aromatic_rings'] = [path
-                                                                                        for path, count in paths_with_ring_aromat_count
-                                                                                        if count != max_arom_rings]
-    if len(paths_max_arom_rings) == 1:
-        if opts.debug:
-            debug_info["result"] = f'unique path with {str_fn(opts.select_arom_rings)} aromatic rings'
-            return paths_max_arom_rings[0], debug_info
-        return paths_max_arom_rings[0]
-    # Favour paths with the least total number of ring atoms
-    paths_with_ring_atom_counts = []
-    for path in paths_max_arom_rings:
-        ring_atom_count = sum(1 for idx in path if mol.GetAtomWithIdx(idx).IsInRing())
-        paths_with_ring_atom_counts.append((path, ring_atom_count))
-    # Filter for paths having the minimum number of ring atoms
-    min_ring_atom_count = opts.select_num_ring_atoms(count for path, count in paths_with_ring_atom_counts)
-    paths_min_ring_atoms = [path for path, count in paths_with_ring_atom_counts if count == min_ring_atom_count]
-    if opts.debug:
-        debug_info[f'{str_fn(opts.select_num_ring_atoms)}_ring_atoms'] = min_ring_atom_count
-        debug_info[f'paths_with_{str_fn(opts.select_num_ring_atoms)}_ring_atoms'] = paths_min_ring_atoms
-        debug_info[f'paths_without_{str_fn(opts.select_num_ring_atoms)}_ring_atoms'] = [path for path, count in paths_with_ring_atom_counts if count != min_ring_atom_count]
-    if len(paths_min_ring_atoms) == 1:
-        if opts.debug:
-            debug_info["result"] = f'unique path with {str_fn(opts.select_num_ring_atoms)} ring atoms'
-            return paths_min_ring_atoms[0], debug_info
-        return paths_min_ring_atoms[0]
-    # Favour paths with asymmetry
+    # Define the metric: calculate the number of unique aromatic rings the path intersects
+    def metric(path):
+        visited_rings = {ring for idx in path for ring in atom_to_rings_map[idx]}
+        return sum(ring_aromat_map.get(ring_idx, 0) for ring_idx in visited_rings)
+    # Call the generic helper using the default debugger
+    return _apply_tie_breaker(candidate_paths=candidate_paths,
+                              metric_fn=metric,
+                              selection_fn=opts.select_arom_rings,
+                              debug_name='aromatic_ring_count')
+
+
+def _break_tie_by_total_ring_atoms(mol, candidate_paths, opts):
+    """Determine paths, from given candidates, that satisfy the total ring atom selection criterion.
+    
+    :param mol: the molecule from which the paths are identified
+    :param candidate_paths: candidate paths to investigate
+    :param opts: selection criteria.
+    :return: a tuple of the minimum (or maximum) total ring atom count in the identified path(s), the identified path(s),
+    the rejected_path(s), and a dictionary of debugging information.
+    """
+    # Define the metric: calculate the number of ring atoms in the path
+    metric = lambda path: sum(1 for idx in path if mol.GetAtomWithIdx(idx).IsInRing())
+    # Call the generic helper using the default debugger
+    return _apply_tie_breaker(candidate_paths=candidate_paths,
+                              metric_fn=metric,
+                              selection_fn=opts.select_num_ring_atoms,
+                              debug_name='ring_atom_count')
+
+
+def _break_tie_by_asymmetry(mol, candidate_paths, opts):
+    """Determine paths, from given candidates, that satisfy the asymmetry selection criterion.
+    
+    :param mol: the molecule from which the paths are identified
+    :param candidate_paths: candidate paths to investigate
+    :param opts: selection criteria.
+    :return: a tuple of the number of asymmetrical fragments in the identified path(s), the identified path(s),
+    the rejected_path(s), and a dictionary of debugging information.
+    """
+    # Get the basic scaffold
     true_bsc_atoms = set(scaffolds.get_basic_scaffold(mol, only_atom_indices=True))
-    path_fragment_smiles = [] # Canonical SMILES for the fragments of each path
-    for path in paths_min_ring_atoms:
+    # Canonical SMILES for the fragments of each path
+    path_fragment_smiles = []
+    for path in candidate_paths:
         # Determine the atoms in the fragment (path atoms minus scaffold atoms)
         fragment_indices = sorted(list(set(path) - true_bsc_atoms))
         if fragment_indices:
@@ -245,206 +372,121 @@ def get_min_max_shortest_path_without_symmetry(
             rw_mol = Chem.RWMol(mol)
             # Remove all atoms NOT in our fragment
             atoms_to_remove = [i for i in range(mol.GetNumAtoms()) if i not in fragment_indices]
-            scaffolds.unassign_chirality_and_delete(rw_mol, atoms_to_remove)
+            scaffolds.utils.unassign_chirality_and_delete(rw_mol, atoms_to_remove)
             # Get fragments
             fragments = Chem.GetMolFrags(rw_mol.GetMol(), asMols=True)
             # Use canonical SMILES to uniquely identify the fragment's structure
-            fragment_smiles = map(Chem.MolToSmiles, fragments)
-            path_fragment_smiles.append((path, set(fragment_smiles)))
-    # Select the path avoiding unique fragments
-    max_fragments = opts.select_assymetry(map(len, list(zip(*path_fragment_smiles))[1]))
-    path_max_fragments = [path for path, frags in path_fragment_smiles if len(frags) == max_fragments]
-    if opts.debug:
-        debug_info[f'path_fragments_for_asymmetry'] = path_fragment_smiles
-        debug_info[f'{str_fn(opts.select_assymetry)}_asymmetry_fragments'] = max_fragments
-        debug_info[f'paths_with_{str_fn(opts.select_assymetry)}_asymmetry_fragments'] = path_max_fragments
-        debug_info[f'paths_without_{str_fn(opts.select_assymetry)}_asymmetry_fragments'] = [path for path, frags in path_fragment_smiles if len(frags) != max_fragments]
-    if len(path_max_fragments) == 1:
-        if opts.debug:
-            debug_info["result"] = f'unique path with {str_fn(opts.select_assymetry)} fragment asymmetry'
-            return path_max_fragments[0], debug_info
-        return path_max_fragments[0]
-    # Prioritize paths with the maximum cumulated sum of atomic numbers
-    paths_total_atomnum = []
-    for path in path_max_fragments:
-        total_atomnum = sum(mol.GetAtomWithIdx(idx).GetAtomicNum() for idx in path)
-        paths_total_atomnum.append((path, total_atomnum))
-        # Filter for paths having the minimum number of ring atoms
-    max_atomnum = opts.select_total_atomic_num(total for path, total in paths_total_atomnum)
-    paths_max_atomnum = [path for path, total in paths_total_atomnum if total == max_atomnum]
-    if opts.debug:
-        debug_info[f'{str_fn(opts.select_total_atomic_num)}_total_atomic_num'] = max_atomnum
-        debug_info[f'paths_with_{str_fn(opts.select_total_atomic_num)}_total_atomic_num'] = paths_max_atomnum
-        debug_info[f'paths_without_{str_fn(opts.select_total_atomic_num)}_total_atomic_num'] = [path for path, total in paths_total_atomnum if total != max_atomnum]
-    if len(paths_max_atomnum) == 1:
-        if opts.debug:
-            debug_info["result"] = f'unique path with {str_fn(opts.select_total_atomic_num)} total atomic number'
-            return paths_max_atomnum[0], debug_info
-        return paths_max_atomnum[0]
-    # Prioritize paths with atypical isotopes
+            fragment_smiles_set = set(map(Chem.MolToSmiles, fragments))
+            path_fragment_smiles.append((path, fragment_smiles_set))
+    # Create a lookup map for the metric function
+    path_to_frags_map = {tuple(path): frags for path, frags in path_fragment_smiles}
+    # Define the metric: calculate the number of unique fragments
+    metric = lambda path: len(path_to_frags_map.get(tuple(path), set()))
+    #Define the custom debug formatter
+    def _debug_formatter(winning_metric, selected, rejected, selection_fn, **kwargs) -> OrderedDict:
+        debug_info = OrderedDict()
+        sel_fn_str = str_fn(selection_fn)
+        # Add the custom debug information that the default debugger can't handle
+        debug_info['path_fragments_for_asymmetry'] = path_fragment_smiles
+        # Add the standard debug information
+        debug_info[f'{sel_fn_str}_asymmetry_fragments'] = winning_metric
+        debug_info[f'paths_with_{sel_fn_str}_asymmetry_fragments'] = selected
+        debug_info[f'paths_without_{sel_fn_str}_asymmetry_fragments'] = rejected
+        if len(selected) <= 1:
+            debug_info["result"] = (f'unique path with {sel_fn_str} fragment asymmetry found'
+                                    if len(selected)
+                                    else 'no path found')
+        return debug_info
+    # Call the generic helper with the custom formatter ---
+    return _apply_tie_breaker(candidate_paths=candidate_paths,
+                              metric_fn=metric,
+                              selection_fn=opts.select_assymetry,
+                              # Use the custom formatter
+                              custom_debug_formatter_fn=_debug_formatter)
+
+
+def _break_tie_by_total_atomic_number(mol, candidate_paths, opts):
+    """Determine paths, from given candidates, that satisfy the total atomic number selection criterion.
+    
+    :param mol: the molecule from which the paths are identified
+    :param candidate_paths: candidate paths to investigate
+    :param opts: selection criteria.
+    :return: a tuple of the minimum (or maximum) total atomic number in the identified path(s), the identified path(s),
+    the rejected_path(s), and a dictionary of debugging information.
+    """
+    # Define the metric: calculate the sum of atomic numbers along the path
+    metric = lambda path: sum(mol.GetAtomWithIdx(idx).GetAtomicNum() for idx in path)
+    # Call the generic helper using the default debugger
+    return _apply_tie_breaker(candidate_paths=candidate_paths,
+                              metric_fn=metric,
+                              selection_fn=opts.select_total_atomic_num,
+                              debug_name='total_atomic_number')
+
+
+def _break_tie_by_atypical_isotopes(mol, candidate_paths, opts):
+    """Determine paths, from given candidates, that satisfy the total atypical isotope selection criterion.
+    
+    :param mol: the molecule from which the paths are identified
+    :param candidate_paths: candidate paths to investigate
+    :param opts: selection criteria.
+    :return: a tuple of the minimum (or maximum) total atypical isotope in the identified path(s), the identified path(s),
+    the rejected_path(s), and a dictionary of debugging information.
+    """
+    # Define the metric: calculate the sum of atypical isotopes along the path
     periodic_table = Chem.GetPeriodicTable()
-    paths_isotopes = []
-    for path in paths_max_atomnum:
-        total_atypical_isotopes = sum(mol.GetAtomWithIdx(idx).GetIsotope()
-                                      for idx in path
-                                      if periodic_table.GetMostCommonIsotope(mol.GetAtomWithIdx(idx).GetAtomicNum()) != mol.GetAtomWithIdx(idx).GetIsotope())
-        paths_isotopes.append((path, total_atypical_isotopes))
-    max_atypical_isotopes = opts.select_isotopes(total for path, total in paths_isotopes)
-    paths_max_isotopes = [path for path, total in paths_isotopes if total == max_atypical_isotopes]
-    if opts.debug:
-        debug_info[f'{str_fn(opts.select_isotopes)}_total_atypical_isotope'] = max_atypical_isotopes
-        debug_info[f'paths_with_{str_fn(opts.select_isotopes)}_total_atypical_isotope'] = paths_max_isotopes
-        debug_info[f'paths_without_{str_fn(opts.select_isotopes)}_total_atypical_isotope'] = [path for path, total in paths_isotopes if total != max_atypical_isotopes]
-    if len(paths_max_isotopes) == 1:
-        if opts.debug:
-            debug_info["result"] = f'unique path with {str_fn(opts.select_isotopes)} total atypical isotopic mass'
-            return paths_max_isotopes[0], debug_info
-        return paths_max_isotopes[0]
-    # Prioritize paths whose sequence of atomic numbers grows the most and the fastest
-    paths_with_seq_atomnum = []
-    for path in paths_max_isotopes:
+    metric = lambda path: sum(mol.GetAtomWithIdx(idx).GetIsotope()
+                              for idx in path
+                              if periodic_table.GetMostCommonIsotope(mol.GetAtomWithIdx(idx).GetAtomicNum()) != mol.GetAtomWithIdx(idx).GetIsotope())
+    # Call the generic helper using the default debugger
+    return _apply_tie_breaker(candidate_paths=candidate_paths,
+                              metric_fn=metric,
+                              selection_fn=opts.select_isotopes,
+                              debug_name='total_atypical_isotopic_mass')
+
+
+def _break_tie_by_atomic_num_topology(mol, candidate_paths, opts):
+    """Determine paths, from given candidates, that satisfy the atomic number topology selection criterion.
+    
+    :param mol: the molecule from which the paths are identified
+    :param candidate_paths: candidate paths to investigate
+    :param opts: selection criteria.
+    :return: a tuple of the minimum (or maximum) atomic number topology in the identified path(s), the identified path(s),
+    the rejected_path(s), and a dictionary of debugging information.
+    """
+    # Define the metric: get the sequence of atomic numbers, then choose the forward
+    # or reverse sequence based on the options. The sequence itself is the metric.
+    def metric(path):
         seq_atomnum = [mol.GetAtomWithIdx(idx).GetAtomicNum() for idx in path]
-        # Consider the reverse orientation of the sequence
-        seq_atomnum = opts.select_atom_num_topology_dir(seq_atomnum, seq_atomnum[::-1])
-        paths_with_seq_atomnum.append((path, seq_atomnum))
-    max_seq_atomnum = opts.select_atom_num_topology(seq_atomnum for path, seq_atomnum in paths_with_seq_atomnum)
-    paths_min_seq_atomnum = [path for path, seq_atomnum in paths_with_seq_atomnum if seq_atomnum == max_seq_atomnum]
-    if opts.debug:
-        debug_info[f'{str_fn(opts.select_atom_num_topology)}_topology_atomic_nums'] = max_seq_atomnum
-        debug_info[f'paths_with_{str_fn(opts.select_atom_num_topology)}_topology_atomic_nums'] = paths_min_seq_atomnum
-        debug_info[f'paths_without_{str_fn(opts.select_atom_num_topology)}_topology_atomic_nums'] = [path for path, seq_atomnum in paths_with_seq_atomnum if seq_atomnum != max_seq_atomnum]
-    if len(paths_min_seq_atomnum) == 1:
-        if opts.debug:
-            debug_info["result"] = f'unique path with {str_fn(opts.select_atom_num_topology)} atomic number topology'
-            return paths_min_seq_atomnum[0], debug_info
-        return paths_min_seq_atomnum[0]
-    # Prioritize paths whose sequence of bond orders grows the fastest
-    paths_with_seq_bondorder = []
-    for path in paths_min_seq_atomnum:
+        return opts.select_atom_num_topology_dir(seq_atomnum, seq_atomnum[::-1])
+    # Call the generic helper using the default debugger
+    return _apply_tie_breaker(candidate_paths=candidate_paths,
+                             metric_fn=metric,
+                             selection_fn=opts.select_atom_num_topology,
+                             debug_name='atomic_number_topology')
+
+
+def _break_tie_by_bond_order_topology(mol, candidate_paths, opts):
+    """Determine paths, from given candidates, that satisfy the ring count selection criterion.
+    
+    :param mol: the molecule from which the paths are identified
+    :param candidate_paths: candidate paths to investigate
+    :param opts: selection criteria.
+    :return: a tuple of the minimum (or maximum) ring count in the identified path(s), the identified path(s),
+    the rejected_path(s), and a dictionary of debugging information.
+    :return: a tuple of the minimum (or maximum) ring count in the identified path(s), the identified path(s),
+    the rejected_path(s), and a dictionary of debugging information.
+    """
+    # Define the metric: get the sequence of bond orders, then choose the forward
+    # or reverse sequence based on the options. The sequence itself is the metric.
+    def metric(path):
         seq_bondorder = [mol.GetBondBetweenAtoms(path[i - 1], path[i]).GetBondTypeAsDouble()
                          for i in range(1, len(path))]
-        # Consider the reverse orientation of the sequence
-        seq_bondorder = opts.select_bond_order_topology_dir(seq_bondorder, seq_bondorder[::-1])
-        paths_with_seq_bondorder.append((path, seq_bondorder))
-    max_seq_bond_order = opts.select_bond_order_topology(seq_bondorder for path, seq_bondorder in paths_with_seq_bondorder)
-    paths_min_seq_bondorder = [path for path, seq_bondorder in paths_with_seq_bondorder if seq_bondorder == max_seq_bond_order]
-    if opts.debug:
-        debug_info[f'{str_fn(opts.select_bond_order_topology)}_topology_bond_orders'] = max_seq_bond_order
-        debug_info[f'paths_with_{str_fn(opts.select_bond_order_topology)}_topology_bond_orders'] = paths_min_seq_bondorder
-        debug_info[f'paths_without_{str_fn(opts.select_bond_order_topology)}_topology_bond_orders'] = [path for path, seq_bondorder in paths_with_seq_bondorder if seq_bondorder != max_seq_bond_order]
-    if len(paths_min_seq_bondorder) == 1:
-        if opts.debug:
-            debug_info["result"] = f'unique path with {str_fn(opts.select_bond_order_topology)} bond order topology'
-            return paths_min_seq_bondorder[0], debug_info
-        return paths_min_seq_bondorder[0]
-    # All paths are symmetrically identical, choose one
-    if opts.debug:
-        debug_info["result"] = f'paths are equivalent'
-        return paths_min_seq_bondorder[0], debug_info
-    return paths_min_seq_bondorder[0]
-
-def get_original_min_max_shortest_path_without_symmetry(
-        mol: Chem.Mol,
-        indices: list[int],
-        basic_scaffold: list[int] = None,
-        opts: MinMaxShortestPathOptions = None) -> list[int] | tuple[list[int], dict]:
-    """
-    Find the longest/shortest path between any two points of a list of atom indices,
-    with only one tie-breaking rule.
-
-    When multiple paths have the same longest/shortest length, paths that,
-    after removing atoms belonging to the basic_scaffold, result in chemically
-    unique fragments are preferred.
-
-    :param mol: The molecule to search within.
-    :param possible_endpoints: List of candidate atom indices for the endpoint.
-    :param basic_scaffold: A list of atom indices representing a scaffold. Used for tie-breaking. Defaults to empty.
-    :param opts: Options for each of the selection steps.
-    :return: A list of atom indices for the chosen shortest path, together with debugging information if opts.debug is True.
-    """
-    if not isinstance(mol, Chem.Mol):
-        raise ValueError("Molecule must be a valid RDKit Chem.Mol.")
-    if not isinstance(indices, list):
-        raise ValueError("indices must be a valid list.")
-    if opts.debug:
-        debug_info = OrderedDict({'input_smiles': Chem.MolToSmiles(mol, canonical=False)})
-    scaffold_set = set(basic_scaffold) or set()
-    # Find all paths and their lengths
-    all_paths = []
-    for start, end in combinations(indices, 2):
-        # Ensure start and end are not the same
-        path = Chem.GetShortestPath(mol, start, end)
-        if path and not scaffold_set.isdisjoint(path):
-            all_paths.append(list(path))
-    if opts.debug:
-        debug_info["all_paths_terminal_atoms"] = all_paths
-    if not all_paths:
-        # No path between 2 terminal carbon atoms exists
-        # Retry with the basic scaffold
-        for start, end in product(indices, scaffold_set):
-            if start == end:
-                continue
-            # Ensure start and end are not the same
-            path = Chem.GetShortestPath(mol, start, end)
-            if path:
-                all_paths.append(list(path))
-        if not all_paths:
-            # Cannot find a path
-            if opts.debug:
-                debug_info["result"] = 'no path found'
-                return [], debug_info
-            return []
-        if opts.debug:
-            debug_info["all_paths_terminal_and_scaffold_atoms"] = all_paths
-    # Identify all paths with the minimum length
-    minmax_len = opts.select_path_len(map(len, all_paths))
-    shortest_paths_group = [p for p in all_paths if len(p) == minmax_len]
-    if opts.debug:
-        debug_info[f'{str_fn(opts.select_path_len)}_path_len'] = minmax_len
-        debug_info[f'paths_with_{str_fn(opts.select_path_len)}_len'] = shortest_paths_group
-        debug_info[f'paths_without_{str_fn(opts.select_path_len)}_len'] = [p for p in all_paths if len(p) != minmax_len]
-    # No tie-break needed if there's only one shortest path
-    if len(shortest_paths_group) <= 1:
-        if opts.debug:
-            debug_info["result"] = (f'unique {str_fn(opts.select_path_len)} path found'
-                                    if len(shortest_paths_group)
-                                    else 'no path found')
-            return (shortest_paths_group[0] if shortest_paths_group else []), debug_info
-        return shortest_paths_group[0] if shortest_paths_group else []
-    # Tie-Breaking Logic
-    path_fragment_smiles = [] # Canonical SMILES for the fragments of each path
-    for path in shortest_paths_group:
-        # Determine the atoms in the fragment (path atoms minus scaffold atoms)
-        fragment_indices = sorted(list(set(path) - scaffold_set))
-        if fragment_indices:
-            # Create a new molecule from the fragment indices
-            rw_mol = Chem.RWMol(mol)
-            # Remove all atoms NOT in our fragment
-            atoms_to_remove = [i for i in range(mol.GetNumAtoms()) if i not in fragment_indices]
-            scaffolds.unassign_chirality_and_delete(rw_mol, atoms_to_remove)
-            # Get fragments
-            fragments = Chem.GetMolFrags(rw_mol.GetMol(), asMols=True)
-            # Use canonical SMILES to uniquely identify the fragment's structure
-            fragment_smiles = map(Chem.MolToSmiles, fragments)
-            path_fragment_smiles.append((path, set(fragment_smiles)))
-    # Select the path avoiding unique fragments
-    max_fragments = opts.select_assymetry(map(len, list(zip(*path_fragment_smiles))[1]))
-    path_max_fragments = [path for path, frags in path_fragment_smiles if len(frags) == max_fragments]
-    if opts.debug:
-        debug_info[f'path_fragments_for_asymmetry'] = path_fragment_smiles
-        debug_info[f'{str_fn(opts.select_assymetry)}_asymmetry_fragments'] = max_fragments
-        debug_info[f'paths_with_{str_fn(opts.select_assymetry)}_asymmetry_fragments'] = path_max_fragments
-        debug_info[f'paths_without_{str_fn(opts.select_assymetry)}_asymmetry_fragments'] = [path for path, frags in path_fragment_smiles if len(frags) != max_fragments]
-    if len(path_max_fragments) == 1:
-        if opts.debug:
-            debug_info["result"] = f'unique path with {str_fn(opts.select_assymetry)} fragment asymmetry'
-            return path_max_fragments[0], debug_info
-        return path_max_fragments[0]
-    if opts.debug:
-        debug_info["result"] = f'{len(path_max_fragments)} non unique paths found, retruning the first one'
-        return path_max_fragments[0], debug_info
-    # return max(path_fragment_smiles, key=lambda x: len(x[1]))[0]
-    return path_max_fragments[0]
+        return opts.select_bond_order_topology_dir(seq_bondorder, seq_bondorder[::-1])
+    # Call the generic helper using the default debugger
+    return _apply_tie_breaker(candidate_paths=candidate_paths,
+                             metric_fn=metric,
+                             selection_fn=opts.select_bond_order_topology,
+                             debug_name='bond_order_topology')
 
 
 def get_shortest_shortest_path(mol: Chem.Mol, index: int, possible_endpoints: list[int]) -> list[int]:
