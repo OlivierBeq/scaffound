@@ -197,6 +197,59 @@ def _find_all_paths_with_minmax_length(
     return minmax_len, selected_paths, rejected_paths, debug_info
 
 
+def _apply_tie_breaker(
+    candidate_paths: list[list[int]],
+    metric_fn: callable,
+    selection_fn: callable,
+    *,  # Makes subsequent arguments keyword-only for clarity
+    debug_name: str = None,
+    custom_debug_formatter_fn: callable = None
+) -> tuple[any, list[int], list[int], dict]:
+    """Generic helper to apply any tie-breaking rule.
+    
+    :param candidate_paths: list of all paths to be evaluated
+    :param metric_fn: metric to apply to paths
+    :param selection_fn: selection function (min or max) to apply to path metrics
+    :param debug_name: name of the tie-breaking rule
+    :param custom_debug_formatter_fn: custom debugger function
+    """
+    # Check arguments
+    assert debug_name or custom_debug_formatter_fn, \
+        "Must provide 'debug_name' for default debugging, or a 'custom_debug_formatter_fn'."
+    # Calculate metrics for each path
+    paths_with_metrics = [(path, metric_fn(path)) for path in candidate_paths]
+    if not paths_with_metrics:
+        return None, [], candidate_paths, OrderedDict({"result": "no path found"})
+    # Filter paths
+    valid_metrics = [metric for _, metric in paths_with_metrics if metric is not None]
+    if not valid_metrics:
+        return None, [], candidate_paths, OrderedDict({"result": "no path found"})
+    # Select paths
+    winning_metric = selection_fn(valid_metrics)
+    selected_paths = [path for path, metric in paths_with_metrics if metric == winning_metric]
+    rejected_paths = [path for path, metric in paths_with_metrics if metric != winning_metric]
+    # Log debug info
+    if custom_debug_formatter_fn:
+        # Use the provided custom formatter
+        debug_info = custom_debug_formatter_fn(winning_metric=winning_metric,
+                                               selected=selected_paths,
+                                               rejected=rejected_paths,
+                                               selection_fn=selection_fn,
+                                               paths_with_metrics=paths_with_metrics)
+    else:
+        # Use the default, built-in formatter
+        sel_fn_str = str_fn(selection_fn)
+        debug_info = OrderedDict()
+        debug_info[f'{sel_fn_str}_{debug_name}'] = winning_metric
+        debug_info[f'paths_with_{sel_fn_str}_{debug_name}'] = selected_paths
+        debug_info[f'paths_without_{sel_fn_str}_{debug_name}'] = rejected_paths
+        if len(selected_paths) <= 1:
+            debug_info["result"] = (f'unique path with {sel_fn_str} {debug_name.replace("_", " ")} found'
+                                    if len(selected_paths)
+                                    else 'no path found')
+    return winning_metric, selected_paths, rejected_paths, debug_info
+
+
 def _break_tie_by_ring_count(mol, candidate_paths, opts):
     """Determine paths, from given candidates, that satisfy the ring count selection criterion.
     
@@ -206,32 +259,19 @@ def _break_tie_by_ring_count(mol, candidate_paths, opts):
     :return: a tuple of the minimum (or maximum) ring count in the identified path(s), the identified path(s),
     the rejected_path(s), and a dictionary of debugging information.
     """
-    debug_info = OrderedDict()
     # Map each atom to the rings it belongs to
     ring_info = mol.GetRingInfo()
     atom_to_rings_map = [[] for _ in range(mol.GetNumAtoms())]
     for ring_idx, ring_atoms in enumerate(ring_info.AtomRings()):
         for atom_idx in ring_atoms:
             atom_to_rings_map[atom_idx].append(ring_idx)
-    # Find the number of rings a path goes through
-    paths_with_ring_counts = [] # number of rings
-    for path in candidate_paths:
-        visited_rings = set()
-        for atom_idx in path:
-            # Add all rings this atom belongs to into the set
-            visited_rings.update(atom_to_rings_map[atom_idx])
-        paths_with_ring_counts.append((path, len(visited_rings)))
-    minmax_visited_rings = opts.select_ring_count(count for path, count in paths_with_ring_counts)
-    selected_paths = [path for path, count in paths_with_ring_counts if count == minmax_visited_rings]
-    rejected_paths = [path for path, count in paths_with_ring_counts if count != minmax_visited_rings]
-    debug_info[f'{str_fn(opts.select_ring_count)}_ring_count'] = minmax_visited_rings
-    debug_info[f'paths_with_{str_fn(opts.select_ring_count)}_rings'] = selected_paths
-    debug_info[f'paths_without_{str_fn(opts.select_ring_count)}_rings'] = rejected_paths
-    if len(selected_paths) <= 1:
-        debug_info["result"] = (f'unique path with {str_fn(opts.select_ring_count)} rings found'
-                                if len(selected_paths)
-                                else 'no path found')
-    return minmax_visited_rings, selected_paths, rejected_paths, debug_info
+    # Define the metric: count the number of unique rings a path passes through
+    metric = lambda path: len(set(ring for idx in path for ring in atom_to_rings_map[idx]))
+    # Call the generic helper using the default debugger
+    return _apply_tie_breaker(candidate_paths=candidate_paths,
+                              metric_fn=metric,
+                              selection_fn=opts.select_ring_count,
+                              debug_name='ring_count')
 
 
 def _break_tie_by_ring_size(mol, candidate_paths, opts):
@@ -243,7 +283,6 @@ def _break_tie_by_ring_size(mol, candidate_paths, opts):
     :return: a tuple of the minimum (or maximum) total ring size in the identified path(s), the identified path(s),
     the rejected_path(s), and a dictionary of debugging information.
     """
-    debug_info = OrderedDict()
     # Map each atom to the rings it belongs to
     ring_info = mol.GetRingInfo()
     atom_to_rings_map = [[] for _ in range(mol.GetNumAtoms())]
@@ -252,27 +291,15 @@ def _break_tie_by_ring_size(mol, candidate_paths, opts):
         for atom_idx in ring_atoms:
             atom_to_rings_map[atom_idx].append(ring_idx)
         ringsize_map[ring_idx] = len(ring_atoms)
-    # Calculate the summped size of rings a path goes through
-    paths_with_ringsize = [] # size of rings
-    for path in candidate_paths:
-        visited_rings = set()
-        for atom_idx in path:
-            # Add all rings this atom belongs to into the set
-            visited_rings.update(atom_to_rings_map[atom_idx])
-        # Get the size of each ring in the set of unique rings in this path
-        paths_with_ringsize.append((path, sum(ringsize_map[ring_idx] for ring_idx in visited_rings)))
-        # Prioritize paths with smaller rings
-    minmax_total_ringsize = opts.select_ring_size(total_ringsize for path, total_ringsize in paths_with_ringsize)
-    selected_paths = [path for path, total_ringsize in paths_with_ringsize if total_ringsize == minmax_total_ringsize]
-    rejected_paths = [path for path, total_ringsize in paths_with_ringsize if total_ringsize != minmax_total_ringsize]
-    debug_info[f'{str_fn(opts.select_ring_size)}_ring_size'] = minmax_total_ringsize
-    debug_info[f'paths_with_{str_fn(opts.select_ring_size)}_total_ring_size'] = selected_paths
-    debug_info[f'paths_without_{str_fn(opts.select_ring_size)}_total_ring_size'] = rejected_paths
-    if len(selected_paths) <= 1:
-        debug_info["result"] = (f'unique path with {str_fn(opts.select_ring_size)} total ring size'
-                                if len(selected_paths)
-                                else 'no path found')
-    return minmax_total_ringsize, selected_paths, rejected_paths, debug_info
+    # Define the metric: calculate the sum of sizes of all unique rings the path intersects
+    def metric(path):
+        visited_rings = {ring for idx in path for ring in atom_to_rings_map[idx]}
+        return sum(ringsize_map[ring_idx] for ring_idx in visited_rings)
+    # Call the generic helper using the default debugger
+    return _apply_tie_breaker(candidate_paths=candidate_paths,
+                              metric_fn=metric,
+                              selection_fn=opts.select_ring_size,
+                              debug_name='total_ring_size')
 
 
 def _break_tie_by_aromaticity(mol, candidate_paths, opts):
@@ -287,7 +314,6 @@ def _break_tie_by_aromaticity(mol, candidate_paths, opts):
     the rejected_path(s), and a dictionary of debugging information.
 
     """
-    debug_info = OrderedDict()
     # Map each atom to the rings it belongs to
     ring_info = mol.GetRingInfo()
     atom_to_rings_map = [[] for _ in range(mol.GetNumAtoms())]
@@ -296,27 +322,15 @@ def _break_tie_by_aromaticity(mol, candidate_paths, opts):
         for atom_idx in ring_atoms:
             atom_to_rings_map[atom_idx].append(ring_idx)
         ring_aromat_map[ring_idx] = all(mol.GetAtomWithIdx(atom).GetIsAromatic() for atom in ring_atoms)
-    # Find the number of aromatic rings a path goes through
-    paths_with_ring_aromat_count = [] # are rings aromatic
-    for path in candidate_paths:
-        visited_rings = set()
-        for atom_idx in path:
-            # Add all rings this atom belongs to into the set
-            visited_rings.update(atom_to_rings_map[atom_idx])
-        # Get the number of aromatic rings
-        paths_with_ring_aromat_count.append((path, sum(ring_aromat_map[ring_idx] for ring_idx in visited_rings)))
-    # Prioritize paths with aromatic rings
-    minmax_arom_rings = opts.select_arom_rings(count for path, count in paths_with_ring_aromat_count)
-    selected_paths = [path for path, count in paths_with_ring_aromat_count if count == minmax_arom_rings]
-    rejected_paths = [path for path, count in paths_with_ring_aromat_count if count != minmax_arom_rings]
-    debug_info[f'{str_fn(opts.select_arom_rings)}_aromatic_rings'] = minmax_arom_rings
-    debug_info[f'paths_with_{str_fn(opts.select_arom_rings)}_aromatic_rings'] = selected_paths
-    debug_info[f'paths_without_{str_fn(opts.select_arom_rings)}_aromatic_rings'] = rejected_paths
-    if len(selected_paths) <= 1:
-            debug_info["result"] = (f'unique path with {str_fn(opts.select_arom_rings)} aromatic rings'
-                                    if len(selected_paths)
-                                    else 'no path found')
-    return minmax_arom_rings, selected_paths, rejected_paths, debug_info
+    # Define the metric: calculate the number of unique aromatic rings the path intersects
+    def metric(path):
+        visited_rings = {ring for idx in path for ring in atom_to_rings_map[idx]}
+        return sum(ring_aromat_map.get(ring_idx, 0) for ring_idx in visited_rings)
+    # Call the generic helper using the default debugger
+    return _apply_tie_breaker(candidate_paths=candidate_paths,
+                              metric_fn=metric,
+                              selection_fn=opts.select_arom_rings,
+                              debug_name='aromatic_ring_count')
 
 
 def _break_tie_by_total_ring_atoms(mol, candidate_paths, opts):
@@ -328,24 +342,13 @@ def _break_tie_by_total_ring_atoms(mol, candidate_paths, opts):
     :return: a tuple of the minimum (or maximum) total ring atom count in the identified path(s), the identified path(s),
     the rejected_path(s), and a dictionary of debugging information.
     """
-    debug_info = OrderedDict()
-    # Find the total number of ring atoms in a path
-    paths_with_ring_atom_counts = []
-    for path in candidate_paths:
-        ring_atom_count = sum(1 for idx in path if mol.GetAtomWithIdx(idx).IsInRing())
-        paths_with_ring_atom_counts.append((path, ring_atom_count))
-    # Filter for paths having the minimum number of ring atoms
-    minmax_ring_atom_count = opts.select_num_ring_atoms(count for path, count in paths_with_ring_atom_counts)
-    selected_paths = [path for path, count in paths_with_ring_atom_counts if count == minmax_ring_atom_count]
-    rejected_paths = [path for path, count in paths_with_ring_atom_counts if count != minmax_ring_atom_count]
-    debug_info[f'{str_fn(opts.select_num_ring_atoms)}_ring_atoms'] = minmax_ring_atom_count
-    debug_info[f'paths_with_{str_fn(opts.select_num_ring_atoms)}_ring_atoms'] = selected_paths
-    debug_info[f'paths_without_{str_fn(opts.select_num_ring_atoms)}_ring_atoms'] = rejected_paths
-    if len(selected_paths) <= 1:
-        debug_info["result"] = (f'unique path with {str_fn(opts.select_num_ring_atoms)} ring atoms'
-                                if len(selected_paths)
-                                else 'no path found')
-    return minmax_ring_atom_count, selected_paths, rejected_paths, debug_info
+    # Define the metric: calculate the number of ring atoms in the path
+    metric = lambda path: sum(1 for idx in path if mol.GetAtomWithIdx(idx).IsInRing())
+    # Call the generic helper using the default debugger
+    return _apply_tie_breaker(candidate_paths=candidate_paths,
+                              metric_fn=metric,
+                              selection_fn=opts.select_num_ring_atoms,
+                              debug_name='ring_atom_count')
 
 
 def _break_tie_by_asymmetry(mol, candidate_paths, opts):
@@ -357,7 +360,6 @@ def _break_tie_by_asymmetry(mol, candidate_paths, opts):
     :return: a tuple of the number of asymmetrical fragments in the identified path(s), the identified path(s),
     the rejected_path(s), and a dictionary of debugging information.
     """
-    debug_info = OrderedDict()
     # Get the basic scaffold
     true_bsc_atoms = set(scaffolds.get_basic_scaffold(mol, only_atom_indices=True))
     # Canonical SMILES for the fragments of each path
@@ -374,21 +376,33 @@ def _break_tie_by_asymmetry(mol, candidate_paths, opts):
             # Get fragments
             fragments = Chem.GetMolFrags(rw_mol.GetMol(), asMols=True)
             # Use canonical SMILES to uniquely identify the fragment's structure
-            fragment_smiles = map(Chem.MolToSmiles, fragments)
-            path_fragment_smiles.append((path, set(fragment_smiles)))
-    # Select the path maximizing/minimizing the number of fragments
-    minmax_fragments = opts.select_assymetry(map(len, list(zip(*path_fragment_smiles))[1]))
-    selected_paths = [path for path, frags in path_fragment_smiles if len(frags) == minmax_fragments]
-    rejected_paths = [path for path, frags in path_fragment_smiles if len(frags) != minmax_fragments]
-    debug_info[f'path_fragments_for_asymmetry'] = path_fragment_smiles
-    debug_info[f'{str_fn(opts.select_assymetry)}_asymmetry_fragments'] = minmax_fragments
-    debug_info[f'paths_with_{str_fn(opts.select_assymetry)}_asymmetry_fragments'] = selected_paths
-    debug_info[f'paths_without_{str_fn(opts.select_assymetry)}_asymmetry_fragments'] = rejected_paths
-    if len(selected_paths) <= 1:
-        debug_info["result"] = (f'unique path with {str_fn(opts.select_assymetry)} fragment asymmetry'
-                                if len(selected_paths)
-                                else 'no path found')
-    return minmax_fragments, selected_paths, rejected_paths, debug_info
+            fragment_smiles_set = set(map(Chem.MolToSmiles, fragments))
+            path_fragment_smiles.append((path, fragment_smiles_set))
+    # Create a lookup map for the metric function
+    path_to_frags_map = {tuple(path): frags for path, frags in path_fragment_smiles}
+    # Define the metric: calculate the number of unique fragments
+    metric = lambda path: len(path_to_frags_map.get(tuple(path), set()))
+    #Define the custom debug formatter
+    def _debug_formatter(winning_metric, selected, rejected, selection_fn, **kwargs) -> OrderedDict:
+        debug_info = OrderedDict()
+        sel_fn_str = str_fn(selection_fn)
+        # Add the custom debug information that the default debugger can't handle
+        debug_info['path_fragments_for_asymmetry'] = path_fragment_smiles
+        # Add the standard debug information
+        debug_info[f'{sel_fn_str}_asymmetry_fragments'] = winning_metric
+        debug_info[f'paths_with_{sel_fn_str}_asymmetry_fragments'] = selected
+        debug_info[f'paths_without_{sel_fn_str}_asymmetry_fragments'] = rejected
+        if len(selected) <= 1:
+            debug_info["result"] = (f'unique path with {sel_fn_str} fragment asymmetry found'
+                                    if len(selected)
+                                    else 'no path found')
+        return debug_info
+    # Call the generic helper with the custom formatter ---
+    return _apply_tie_breaker(candidate_paths=candidate_paths,
+                              metric_fn=metric,
+                              selection_fn=opts.select_assymetry,
+                              # Use the custom formatter
+                              custom_debug_formatter_fn=_debug_formatter)
 
 
 def _break_tie_by_total_atomic_number(mol, candidate_paths, opts):
@@ -400,24 +414,13 @@ def _break_tie_by_total_atomic_number(mol, candidate_paths, opts):
     :return: a tuple of the minimum (or maximum) total atomic number in the identified path(s), the identified path(s),
     the rejected_path(s), and a dictionary of debugging information.
     """
-    debug_info = OrderedDict()
-    # Find the cumulated sum of atomic numbers in a path
-    paths_total_atomnum = []
-    for path in candidate_paths:
-        total_atomnum = sum(mol.GetAtomWithIdx(idx).GetAtomicNum() for idx in path)
-        paths_total_atomnum.append((path, total_atomnum))
-        # Filter for paths having the minimum number of ring atoms
-    minmax_atomnum = opts.select_total_atomic_num(total for path, total in paths_total_atomnum)
-    selected_paths = [path for path, total in paths_total_atomnum if total == minmax_atomnum]
-    rejected_paths = [path for path, total in paths_total_atomnum if total != minmax_atomnum]
-    debug_info[f'{str_fn(opts.select_total_atomic_num)}_total_atomic_num'] = minmax_atomnum
-    debug_info[f'paths_with_{str_fn(opts.select_total_atomic_num)}_total_atomic_num'] = selected_paths
-    debug_info[f'paths_without_{str_fn(opts.select_total_atomic_num)}_total_atomic_num'] = rejected_paths
-    if len(selected_paths) <= 1:
-        debug_info["result"] = (f'unique path with {str_fn(opts.select_total_atomic_num)} total atomic number'
-                                if len(selected_paths)
-                                else 'no path found')
-    return minmax_atomnum, selected_paths, rejected_paths, debug_info
+    # Define the metric: calculate the sum of atomic numbers along the path
+    metric = lambda path: sum(mol.GetAtomWithIdx(idx).GetAtomicNum() for idx in path)
+    # Call the generic helper using the default debugger
+    return _apply_tie_breaker(candidate_paths=candidate_paths,
+                              metric_fn=metric,
+                              selection_fn=opts.select_total_atomic_num,
+                              debug_name='total_atomic_number')
 
 
 def _break_tie_by_atypical_isotopes(mol, candidate_paths, opts):
@@ -429,26 +432,16 @@ def _break_tie_by_atypical_isotopes(mol, candidate_paths, opts):
     :return: a tuple of the minimum (or maximum) total atypical isotope in the identified path(s), the identified path(s),
     the rejected_path(s), and a dictionary of debugging information.
     """
-    debug_info = OrderedDict()
-    # Find the sum of atypical isotopes in a path
+    # Define the metric: calculate the sum of atypical isotopes along the path
     periodic_table = Chem.GetPeriodicTable()
-    paths_isotopes = []
-    for path in candidate_paths:
-        total_atypical_isotopes = sum(mol.GetAtomWithIdx(idx).GetIsotope()
-                                      for idx in path
-                                      if periodic_table.GetMostCommonIsotope(mol.GetAtomWithIdx(idx).GetAtomicNum()) != mol.GetAtomWithIdx(idx).GetIsotope())
-        paths_isotopes.append((path, total_atypical_isotopes))
-    minmax_atypical_isotopes = opts.select_isotopes(total for path, total in paths_isotopes)
-    selected_paths = [path for path, total in paths_isotopes if total == minmax_atypical_isotopes]
-    rejected_paths = [path for path, total in paths_isotopes if total != minmax_atypical_isotopes]
-    debug_info[f'{str_fn(opts.select_isotopes)}_total_atypical_isotope'] = minmax_atypical_isotopes
-    debug_info[f'paths_with_{str_fn(opts.select_isotopes)}_total_atypical_isotope'] = selected_paths
-    debug_info[f'paths_without_{str_fn(opts.select_isotopes)}_total_atypical_isotope'] = rejected_paths
-    if len(selected_paths) <= 1:
-        debug_info["result"] = (f'unique path with {str_fn(opts.select_isotopes)} total atypical isotopic mass'
-                                if len(selected_paths)
-                                else 'no path found')
-    return minmax_atypical_isotopes, selected_paths, rejected_paths, debug_info
+    metric = lambda path: sum(mol.GetAtomWithIdx(idx).GetIsotope()
+                              for idx in path
+                              if periodic_table.GetMostCommonIsotope(mol.GetAtomWithIdx(idx).GetAtomicNum()) != mol.GetAtomWithIdx(idx).GetIsotope())
+    # Call the generic helper using the default debugger
+    return _apply_tie_breaker(candidate_paths=candidate_paths,
+                              metric_fn=metric,
+                              selection_fn=opts.select_isotopes,
+                              debug_name='total_atypical_isotopic_mass')
 
 
 def _break_tie_by_atomic_num_topology(mol, candidate_paths, opts):
@@ -460,25 +453,16 @@ def _break_tie_by_atomic_num_topology(mol, candidate_paths, opts):
     :return: a tuple of the minimum (or maximum) atomic number topology in the identified path(s), the identified path(s),
     the rejected_path(s), and a dictionary of debugging information.
     """
-    debug_info = OrderedDict()
-    # Get the sequence of atomic numbers in a path
-    paths_with_seq_atomnum = []
-    for path in candidate_paths:
+    # Define the metric: get the sequence of atomic numbers, then choose the forward
+    # or reverse sequence based on the options. The sequence itself is the metric.
+    def metric(path):
         seq_atomnum = [mol.GetAtomWithIdx(idx).GetAtomicNum() for idx in path]
-        # Consider the reverse orientation of the sequence
-        seq_atomnum = opts.select_atom_num_topology_dir(seq_atomnum, seq_atomnum[::-1])
-        paths_with_seq_atomnum.append((path, seq_atomnum))
-    minmax_seq_atomnum = opts.select_atom_num_topology(seq_atomnum for path, seq_atomnum in paths_with_seq_atomnum)
-    selected_paths = [path for path, seq_atomnum in paths_with_seq_atomnum if seq_atomnum == minmax_seq_atomnum]
-    rejected_paths = [path for path, seq_atomnum in paths_with_seq_atomnum if seq_atomnum != minmax_seq_atomnum]
-    debug_info[f'{str_fn(opts.select_atom_num_topology)}_topology_atomic_nums'] = minmax_seq_atomnum
-    debug_info[f'paths_with_{str_fn(opts.select_atom_num_topology)}_topology_atomic_nums'] = selected_paths
-    debug_info[f'paths_without_{str_fn(opts.select_atom_num_topology)}_topology_atomic_nums'] = rejected_paths
-    if len(selected_paths) <= 1:
-        debug_info["result"] = (f'unique path with {str_fn(opts.select_atom_num_topology)} atomic number topology'
-                                if len(selected_paths)
-                                else 'no path found')
-    return minmax_seq_atomnum, selected_paths, rejected_paths, debug_info
+        return opts.select_atom_num_topology_dir(seq_atomnum, seq_atomnum[::-1])
+    # Call the generic helper using the default debugger
+    return _apply_tie_breaker(candidate_paths=candidate_paths,
+                             metric_fn=metric,
+                             selection_fn=opts.select_atom_num_topology,
+                             debug_name='atomic_number_topology')
 
 
 def _break_tie_by_bond_order_topology(mol, candidate_paths, opts):
@@ -492,26 +476,17 @@ def _break_tie_by_bond_order_topology(mol, candidate_paths, opts):
     :return: a tuple of the minimum (or maximum) ring count in the identified path(s), the identified path(s),
     the rejected_path(s), and a dictionary of debugging information.
     """
-    debug_info = OrderedDict()
-    # Get the sequence of bond orders in a path
-    paths_with_seq_bondorder = []
-    for path in candidate_paths:
+    # Define the metric: get the sequence of bond orders, then choose the forward
+    # or reverse sequence based on the options. The sequence itself is the metric.
+    def metric(path):
         seq_bondorder = [mol.GetBondBetweenAtoms(path[i - 1], path[i]).GetBondTypeAsDouble()
                          for i in range(1, len(path))]
-        # Consider the reverse orientation of the sequence
-        seq_bondorder = opts.select_bond_order_topology_dir(seq_bondorder, seq_bondorder[::-1])
-        paths_with_seq_bondorder.append((path, seq_bondorder))
-    minmax_seq_bond_order = opts.select_bond_order_topology(seq_bondorder for path, seq_bondorder in paths_with_seq_bondorder)
-    selected_paths = [path for path, seq_bondorder in paths_with_seq_bondorder if seq_bondorder == minmax_seq_bond_order]
-    rejected_paths = [path for path, seq_bondorder in paths_with_seq_bondorder if seq_bondorder != minmax_seq_bond_order]
-    debug_info[f'{str_fn(opts.select_bond_order_topology)}_topology_bond_orders'] = minmax_seq_bond_order
-    debug_info[f'paths_with_{str_fn(opts.select_bond_order_topology)}_topology_bond_orders'] = selected_paths
-    debug_info[f'paths_without_{str_fn(opts.select_bond_order_topology)}_topology_bond_orders'] = rejected_paths
-    if len(selected_paths) <= 1:
-        debug_info["result"] = (f'unique path with {str_fn(opts.select_bond_order_topology)} bond order topology'
-                                if len(selected_paths)
-                                else 'no path found')
-    return minmax_seq_bond_order, selected_paths, rejected_paths, debug_info
+        return opts.select_bond_order_topology_dir(seq_bondorder, seq_bondorder[::-1])
+    # Call the generic helper using the default debugger
+    return _apply_tie_breaker(candidate_paths=candidate_paths,
+                             metric_fn=metric,
+                             selection_fn=opts.select_bond_order_topology,
+                             debug_name='bond_order_topology')
 
 
 def get_shortest_shortest_path(mol: Chem.Mol, index: int, possible_endpoints: list[int]) -> list[int]:
