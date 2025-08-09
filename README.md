@@ -17,8 +17,10 @@ A Python library for extracting multiple types of molecular scaffolds, framework
     <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"/>
   </a>
   <a href="https://doi.org/10.5281/zenodo.16743086">
-    <img src="https://zenodo.org/badge/1021088731.svg" alt="DOI">
+    <img src="https://zenodo.org/badge/1021088731.svg" alt="DOI"/>
   </a>
+  <img src="https://badge.fury.io/py/scaffound.svg" alt="PyPI version"/>
+  <img src="https://img.shields.io/pypi/pyversions/scaffound" alt="PyPI - Python Version"/>
 </p>
 
 # Core concepts ⚛️
@@ -117,13 +119,18 @@ from scaffound import (get_generic_graph, # All heteroatoms replaced by carbons
                        get_basic_wireframe, get_decorated_wireframe, get_augmented_wireframe)
 ```
 
-Furthermore, one can deactivate `scaffound`'s deterministic longest path algorithm and revert to the original with the following:
+Furthermore, one can deactivate `scaffound`'s deterministic longest path algorithm or fine-tune its behavior.
+The `MinMaxShortestPathOptions` class gives you full control over the tie-breaking cascade used to select the canonical path.
+For example, you can prioritize paths with fewer rings, larger atomic numbers, or different topologies.
+
+To revert to the original, non-deterministic algorithm from the paper:
 
 ```python
 from scaffound import MinMaxShortestPathOptions
 
 opts = MinMaxShortestPathOptions(original_algorithm=True)
 
+# These functions will now use the original algorithm
 MolecularAnatomy(mol, opts=pts)
 get_augmented_scaffold(mol, opts=opts)
 get_augmented_framework(mol, opts=opts)
