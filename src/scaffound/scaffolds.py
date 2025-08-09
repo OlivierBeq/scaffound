@@ -49,6 +49,11 @@ class MolecularAnatomy:
         self._bw = get_generic_graph(get_saturated_graph(self._bs))
         self._dw = get_generic_graph(get_saturated_graph(self._ds))
         self._aw = get_generic_graph(get_saturated_graph(self._as))
+        # Obtain generic, saturated and wireframe graphs
+        self.gg = get_generic_graph(self.mol)
+        self.sg = get_saturated_graph(self.mol)
+        self.wg = get_generic_graph(get_saturated_graph(self.mol))
+
 
     @property
     def basic_scaffold(self):
@@ -88,15 +93,15 @@ class MolecularAnatomy:
 
     @property
     def generic_graph(self):
-        return get_generic_graph(self.mol)
+        return self.gg
 
     @property
     def saturated_graph(self):
-        return get_saturated_graph(self.mol)
+        return self.sg
 
     @property
     def wireframe_graph(self):
-        return get_generic_graph(get_saturated_graph(self.mol))
+        return self.wg
 
     def to_dict(self, original: bool = False):
         """Return the Molecular Anatomy as a dictionary.
@@ -105,10 +110,8 @@ class MolecularAnatomy:
         Otherwise, include the saturated and generic graphs of the molecule and their scaffolds, frameworks and wireframes.
         """
         if not original:
-            saturated_graph = get_saturated_graph(self.mol)
-            generic_graph = get_generic_graph(self.mol)
-            saturated_anatomy = MolecularAnatomy(saturated_graph, opts=self.opts)
-            generic_anatomy = MolecularAnatomy(generic_graph, opts=self.opts)
+            saturated_anatomy = MolecularAnatomy(self.saturated_graph, opts=self.opts)
+            generic_anatomy = MolecularAnatomy(self.generic_graph, opts=self.opts)
             return {'basic scaffold': self.basic_scaffold,
                     'decorated scaffold': self.decorated_scaffold,
                     'augmented scaffold': self.augmented_scaffold,
@@ -118,12 +121,12 @@ class MolecularAnatomy:
                     'basic wireframe': self.basic_wireframe,
                     'decorated wireframe': self.decorated_wireframe,
                     'augmented wireframe': self.augmented_wireframe,
-                    'saturated graph': saturated_graph,
+                    'saturated graph': self.saturated_graph,
                     'saturated basic scaffold': saturated_anatomy.basic_scaffold,
                     'saturated augmented scaffold': saturated_anatomy.augmented_scaffold,
                     'saturated basic framework': saturated_anatomy.basic_framework,
                     'saturated augmented framework': saturated_anatomy.augmented_framework,
-                    'generic graph': generic_graph,
+                    'generic graph': self.generic_graph,
                     'generic augmented scaffold': generic_anatomy.augmented_scaffold,
                     'generic augmented wireframe': generic_anatomy.augmented_wireframe,
                     }
@@ -161,10 +164,8 @@ class MolecularAnatomy:
         except ModuleNotFoundError:
             raise ImportError('Missing optional dependency \'pandas\'.  Use pip or conda to install pandas.')
         if not original:
-            saturated_graph = get_saturated_graph(self.mol)
-            generic_graph = get_generic_graph(self.mol)
-            saturated_anatomy = MolecularAnatomy(saturated_graph, opts=self.opts)
-            generic_anatomy = MolecularAnatomy(generic_graph, opts=self.opts)
+            saturated_anatomy = MolecularAnatomy(self.saturated_graph, opts=self.opts)
+            generic_anatomy = MolecularAnatomy(self.generic_graph, opts=self.opts)
             return pd.Series({'Molecule_SMILES': Chem.MolToSmiles(self.mol),
                               'Molecule_inchikey': Chem.MolToInchiKey(self.mol),
                               'Augmented_Scaffold_inchikey': Chem.MolToInchiKey(self.augmented_scaffold),
@@ -185,8 +186,8 @@ class MolecularAnatomy:
                               'Basic_Framework_SMILES': Chem.MolToSmiles(self.basic_framework),
                               'Basic_Wireframe_inchikey': Chem.MolToInchiKey(self.basic_wireframe),
                               'Basic_Wireframe_SMILES': Chem.MolToSmiles(self.basic_wireframe),
-                              'Saturated_graph_inchikey': Chem.MolToInchiKey(saturated_graph),
-                              'Saturated_graph_SMILES': Chem.MolToSmiles(saturated_graph),
+                              'Saturated_graph_inchikey': Chem.MolToInchiKey(self.saturated_graph),
+                              'Saturated_graph_SMILES': Chem.MolToSmiles(self.saturated_graph),
                               'Saturated_graph_Augmented_Scaffold_inchikey': Chem.MolToInchiKey(saturated_anatomy.augmented_scaffold),
                               'Saturated_graph_Augmented_Scaffold_SMILES': Chem.MolToSmiles(saturated_anatomy.augmented_scaffold),
                               'Saturated_graph_Augmented_Framework_inchikey': Chem.MolToInchiKey(saturated_anatomy.augmented_framework),
@@ -195,8 +196,8 @@ class MolecularAnatomy:
                               'Saturated_graph_Basic_Scaffold_SMILES': Chem.MolToSmiles(saturated_anatomy.basic_scaffold),
                               'Saturated_graph_Basic_Framework_inchikey': Chem.MolToInchiKey(saturated_anatomy.basic_framework),
                               'Saturated_graph_Basic_Framework_SMILES': Chem.MolToSmiles(saturated_anatomy.basic_framework),
-                              'Generic_graph_inchikey': Chem.MolToInchiKey(generic_graph),
-                              'Generic_graph_SMILES': Chem.MolToSmiles(generic_graph),
+                              'Generic_graph_inchikey': Chem.MolToInchiKey(self.generic_graph),
+                              'Generic_graph_SMILES': Chem.MolToSmiles(self.generic_graph),
                               'Generic_graph_Augmented_Scaffold_inchikey': Chem.MolToInchiKey(generic_anatomy.augmented_scaffold),
                               'Generic_graph_Augmented_Scaffold_SMILES': Chem.MolToSmiles(generic_anatomy.augmented_scaffold),
                               'Generic_graph_Augmented_Wireframe_inchikey': Chem.MolToInchiKey(generic_anatomy.augmented_wireframe),
