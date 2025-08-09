@@ -370,7 +370,7 @@ def _break_tie_by_asymmetry(mol, candidate_paths, opts):
             rw_mol = Chem.RWMol(mol)
             # Remove all atoms NOT in our fragment
             atoms_to_remove = [i for i in range(mol.GetNumAtoms()) if i not in fragment_indices]
-            scaffolds.unassign_chirality_and_delete(rw_mol, atoms_to_remove)
+            scaffolds.utils.unassign_chirality_and_delete(rw_mol, atoms_to_remove)
             # Get fragments
             fragments = Chem.GetMolFrags(rw_mol.GetMol(), asMols=True)
             # Use canonical SMILES to uniquely identify the fragment's structure
