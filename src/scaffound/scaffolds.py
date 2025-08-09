@@ -277,7 +277,6 @@ def get_basic_scaffold(mol: Chem.Mol,
     mol = rw_mol.GetMol()
     with BlockLogs():
         Chem.SanitizeMol(mol, catchErrors=False)
-    # mol = rebuild_molecule_to_finalize_stereo(mol)
     # Remove cis-trans stereo
     if loose_ez_stereo:
             mol = reconstruct_and_flatten_db_stereo(mol)
@@ -336,16 +335,13 @@ def get_decorated_scaffold(mol: Chem.Mol,
     # Exit now if only the atom indices are required
     if only_atom_indices:
         return [atom.GetIntProp('original_atomid') for atom in rw_mol.GetAtoms()]
-    # for atom_id in sorted(set(frag_atoms_ro_remove), reverse=True):
-    #     rw_mol.RemoveAtom(atom_id)
     # Sanitize the molecule.
     for atom in rw_mol.GetAtoms():
         atom.SetIsAromatic(False)      # Erase any ghost aromatic flags
         atom.SetNoImplicit(False)      # Grant permission to add hydrogens
     mol = rw_mol.GetMol()
     with BlockLogs():
-        Chem.SanitizeMol(mol, catchErrors=False)  # , Chem.SanitizeFlags.SANITIZE_SETAROMATICITY
-    # mol = rebuild_molecule_to_finalize_stereo(mol)
+        Chem.SanitizeMol(mol, catchErrors=False)
     # Remove cis-trans stereo
     if loose_ez_stereo:
         mol = reconstruct_and_flatten_db_stereo(mol)
