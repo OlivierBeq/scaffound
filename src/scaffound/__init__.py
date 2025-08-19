@@ -8,4 +8,7 @@ from .scaffolds import (MolecularAnatomy, get_generic_graph, get_saturated_graph
 
 from .paths import MinMaxShortestPathOptions, SelectionMethod
 
-__version__ = "0.0.1"
+from .cip import assign_cip
+
+
+__version__ = "0.0.2"

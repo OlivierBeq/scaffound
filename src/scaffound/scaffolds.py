@@ -9,7 +9,6 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.rdBase import BlockLogs
 
-from .cip import compare_substituents_bfs
 from . import paths
 from . import utils
 
@@ -29,7 +28,7 @@ class MolecularAnatomy:
         """Create the anatomy of a molecule.
 
         :param mol: Molecule from which to obtain the scaffold anatomy.
-        :param original: if False, toggle the inclusion of derivations from the input molecule's generic, 
+        :param original: if False, toggle the inclusion of derivations from the input molecule's generic,
         saturated, and wireframe graphs.
         :param opts: Longest path parameters for augmented scaffolds/frameworks/wireframes.
         """
@@ -428,9 +427,9 @@ def get_augmented_scaffold(mol: Chem.Mol,
 
 def _determine_terminal_carbons_and_path(mol: Chem.Mol, bsc_atoms: list[int], dsc_atoms: list[int], opts: paths.MinMaxShortestPathOptions) -> tuple[list[int], list[int]]:
     """Identify the relevant terminal carbons and the longest shortest path between them.
-    
+
     This is the first major step of the augmented scaffold algorithm.
-    
+
     :param mol: the molecule
     :param bsc_atoms: atom indices of the basic scaffold
     :param dsc_atoms: atom indices of the decorated scaffold
@@ -470,7 +469,7 @@ def _determine_terminal_carbons_and_path(mol: Chem.Mol, bsc_atoms: list[int], ds
 
 def _prune_side_chains(mol: Chem.Mol, longest_shortest_path: list[int], terminal_carbons: list[int], bsc_atoms: list[int], dsc_atoms: list[int]) -> tuple[list[int], list[int]]:
     """Identify all atoms from side chains that should be pruned or replaced.
-    
+
     :param mol: the molecule
     :param longest_shortest_path: the longest path of the molecule
     :param terminal_carbons: the list of indices of terminal carbons
@@ -604,4 +603,3 @@ def get_generic_graph(mol: Chem.Mol) -> Chem.Mol:
     with BlockLogs():
         Chem.SanitizeMol(mol)
     return mol
-
