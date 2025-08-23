@@ -5,6 +5,7 @@
 
 
 from collections import deque
+from functools import cmp_to_key
 
 from rdkit import Chem
 
@@ -129,3 +130,39 @@ def compare_substituents_bfs(mol: Chem.Mol, center_idx: int, neighbor1_idx: int,
     if not q1 and q2: return -1  # Path 1 is shorter -> lower priority
     if not q2 and q1: return 1  # Path 2 is shorter -> lower priority
     return 0  # They are identical
+
+
+def assign_cip(mol: Chem.Mol, center_idx: int) -> dict[int, int] | None:
+    """
+    Assigns CIP priorities to all substituents of a specified atom.
+
+    :param mol: The RDKit molecule object.
+    :param center_idx: The index of the atom whose substituents are to be prioritized.
+    :return:A dictionary mapping the index of each substituent atom to its CIP priority (1 is highest),
+    or `inf` if the atom is not single-bonded to the central atom.
+    """
+    center_atom = mol.GetAtomWithIdx(center_idx)
+    priorities = {}
+    single_bonded_neighbors = []
+    # First, separate neighbors by bond type
+    for neighbor in center_atom.GetNeighbors():
+        bond = mol.GetBondBetweenAtoms(center_idx, neighbor.GetIdx())
+        if bond.GetBondType() != Chem.BondType.SINGLE:
+            # Assign `inf` priority to neighbors not connected by a single bond
+            priorities[neighbor.GetIdx()] = float('inf')
+        else:
+            # Collect single-bonded neighbors for sorting
+            single_bonded_neighbors.append(neighbor)
+    # If there are single-bonded neighbors, sort them by CIP rules
+    if single_bonded_neighbors:
+        # Sort the neighbors using the provided lambda function for comparison.
+        # `reverse=True` ensures that the highest priority substituent comes first.
+        sorted_neighbors = sorted(
+            single_bonded_neighbors,
+            key=cmp_to_key(lambda n1, n2: compare_substituents_bfs(mol, center_idx, n1.GetIdx(), n2.GetIdx())),
+            reverse=True
+        )
+        # Assign priorities (1 is the highest) based on the sorted order
+        for i, neighbor in enumerate(sorted_neighbors):
+            priorities[neighbor.GetIdx()] = i + 1
+    return priorities

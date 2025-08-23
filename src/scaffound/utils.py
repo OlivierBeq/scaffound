@@ -248,8 +248,6 @@ def prune_hypervalent_atoms(mol: Chem.Mol, pruning: str = 'shortest') -> Chem.Mo
             # Assign CIP labels
             center_idx = hypervalent_atom_found.GetIdx()
             neighbors = hypervalent_atom_found.GetNeighbors()
-            # # Graceful exit (molecule should have been sanitized)
-            # if len(neighbors) <= 4: break
             # Sort neighbors using the custom BFS comparison function.
             custom_key = cmp_to_key(lambda n1, n2: compare_substituents_bfs(current_mol,
                                                                             center_idx,
