@@ -1,16 +1,19 @@
 
+# scaffound
+
 <p align="center">
-  <img src="https://github.com/OlivierBeq/scaffound/raw/master/graphics/logo/scaffound-logo-dark-50percent.png" alt="scaffound logo" width="300px"/>
+  <img src="https://github.com/OlivierBeq/scaffound/raw/master/graphics/logo/scaffound-logo-dark-50percent.png" alt="scaffound — Python cheminformatics library for molecular scaffold, framework and wireframe extraction with RDKit" width="300px"/>
 </p>
 
 --------------------------------------------------------------------------------
 
-A Python library for extracting multiple types of molecular scaffolds, frameworks, and wireframes.
+**scaffound** is an open-source Python library, built on [RDKit](https://www.rdkit.org/), for cheminformatics scaffold analysis: extracting multiple types of molecular scaffolds, frameworks, and wireframes from chemical structures.
 
+`scaffound` provides a hierarchical approach to molecular decomposition derived from **[[1]](https://doi.org/10.1186/s13321-021-00526-y)**, allowing for a detailed analysis of chemical structures that goes beyond the traditional Bemis-Murcko scaffold (also known as the Murcko scaffold).
 
-`scaffound` provides a hierarchical approach to molecular decomposition derived from **[[1]](https://doi.org/10.1186/s13321-021-00526-y)**, allowing for a detailed analysis of chemical structures beyond the traditional Bemis-Murcko scaffold.
+`scaffound` is an extended implementation of Dompé's *Molecular Anatomy* to identify different types of molecular scaffolds, frameworks and wireframes — unlike classic Murcko-scaffold tools, it also decomposes molecules into decorated and augmented scaffolds, plus their generic (framework) and saturated (wireframe) variants.
 
-`scaffound` is an extended implementation of Dompé's *Molecular Anatomy*  to identify different types of molecular scaffolds, frameworks and wireframes.
+Source code: [github.com/OlivierBeq/scaffound](https://github.com/OlivierBeq/scaffound)
 
 <p align="center">
   <a href="https://opensource.org/licenses/MIT">
@@ -19,8 +22,12 @@ A Python library for extracting multiple types of molecular scaffolds, framework
   <a href="https://doi.org/10.5281/zenodo.16743086">
     <img src="https://zenodo.org/badge/1021088731.svg" alt="DOI"/>
   </a>
-  <img src="https://badge.fury.io/py/scaffound.svg" alt="PyPI version"/>
-  <img src="https://img.shields.io/pypi/pyversions/scaffound" alt="PyPI - Python Version"/>
+  <a href="https://pypi.org/project/scaffound/">
+    <img src="https://badge.fury.io/py/scaffound.svg" alt="PyPI version"/>
+  </a>
+  <a href="https://pypi.org/project/scaffound/">
+    <img src="https://img.shields.io/pypi/pyversions/scaffound" alt="PyPI - Python Version"/>
+  </a>
   <a href="https://github.com/OlivierBeq/scaffound/actions/workflows/ci.yml">
     <img src="https://github.com/OlivierBeq/scaffound/actions/workflows/ci.yml/badge.svg?branch=master" alt="CI Status"/>
   </a>
@@ -29,7 +36,7 @@ A Python library for extracting multiple types of molecular scaffolds, framework
 
 # Core concepts ⚛️
 
-The library extracts three main types of scaffolds:
+The classic Murcko scaffold (Bemis-Murcko scaffold) reduces a molecule to a single ring-and-linker skeleton. `scaffound` extends this idea with a Python/RDKit implementation of three main types of scaffolds:
 
 - **Basic Scaffold**: The core ring systems and their linkers.
 - **Decorated Scaffold**: The basic scaffold plus all heteroatoms directly attached to it by unsaturated bonds.
@@ -68,7 +75,7 @@ This ensures a single deterministic outcome.
 pip install scaffound
 ```
 
-# Geting started 🚀
+# Getting started 🚀
 
 ```python
 # A simple usage example

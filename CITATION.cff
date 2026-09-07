@@ -9,3 +9,11 @@ version: 0.0.1
 doi: 10.5281/zenodo.16743087
 date-released: 2025-08-04
 url: "https://github.com/OlivierBeq/scaffound"
+keywords:
+  - cheminformatics
+  - RDKit
+  - molecular scaffold
+  - Murcko scaffold
+  - Bemis-Murcko scaffold
+  - drug discovery
+  - Python
